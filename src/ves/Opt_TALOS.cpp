@@ -70,11 +70,15 @@ private:
 	unsigned step;
 	unsigned counts;
 	unsigned update_steps;
+	unsigned nw;
 	
 	double kB;
 	double kBT;
 	double beta;
 	double sim_temp;
+	
+	double clip_threshold_bias;
+	double clip_threshold_wgan;
 	
 	float clip_left;
 	float clip_right;
@@ -169,6 +173,8 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   keys.add("optional","LEARN_RATE_WGAN","the learning rate for training the W-GAN");
   keys.add("optional","HYPER_PARAMS_BIAS","other hyperparameters for training the neural network of bias function");
   keys.add("optional","HYPER_PARAMS_WGAN","other hyperparameters for training the W-GAn");
+  keys.add("optional","CLIP_THRESHOLD_BIAS","the clip threshold for training the neural network of bias function");
+  keys.add("optional","CLIP_THRESHOLD_WGAN","the clip threshold for training the W-GAn");
   keys.add("optional","SIM_TEMP","the simulation temperature");
   keys.add("optional","DEBUG_FILE","the file to debug");
   keys.add("hidden","COMBINED_GRADIENT_FILE","the name of output file for the combined gradient (gradient + Hessian term)");
@@ -193,6 +199,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
   narg(getNumberOfArguments()),
   step(0),
   counts(0),
+  nw(1),
   grid_space(getNumberOfArguments()),
   train_bias(NULL),
   train_wgan(NULL),
@@ -213,9 +220,36 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	parseVector("LEARN_RATE_BIAS",lr_bias);
 	parseVector("LEARN_RATE_WGAN",lr_wgan);
 	
-	std::string fullname_bias,fullname_wgan;
-	
 	std::vector<float> other_params_bias,other_params_wgan;
+	parseVector("HYPER_PARAMS_BIAS",other_params_bias);
+	parseVector("HYPER_PARAMS_BIAS",other_params_wgan);
+	
+	unsigned nhidden=0;
+	parse("HIDDEN_NUMBER",nhidden);
+	
+	std::vector<unsigned> hidden_layers;
+	std::vector<std::string> hidden_active;
+	parseVectorAuto("HIDDEN_LAYER",hidden_layers,nhidden);
+	parseVectorAuto("HIDDEN_ACTIVE",hidden_active,nhidden);
+	
+	parse("CLIP_LEFT",clip_left);
+	parse("CLIP_RIGHT",clip_right);
+	
+	parseFlag("OPTIMIZE_CONSTANT_PARAMETER",opt_const);
+	
+	nbiases=numberOfCoeffsSets();
+	tot_basis=0;
+	for(unsigned i=0;i!=nbiases;++i)
+	{
+		unsigned nset=Coeffs(i).getSize();
+		basises_nums.push_back(nset);
+		if(!opt_const)
+			--nset;
+		tot_basis+=nset;
+	}
+	
+	std::vector<float> init_coe;
+	std::string fullname_bias,fullname_wgan;
 	
 	if(lr_bias.size()==0)
 		train_bias=new_traniner(algorithm_bias,pc_bias,fullname_bias);
@@ -227,7 +261,6 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 			plumed_massert(lr_bias.size()==1,"The "+algorithm_bias+" algorithm need only one learning rates");
 		hyper_params_bias.insert(hyper_params_bias.end(),lr_bias.begin(),lr_bias.end());
 		
-		parseVector("HYPER_PARAMS_BIAS",other_params_bias);
 		if(other_params_bias.size()>0)
 			hyper_params_bias.insert(hyper_params_bias.end(),other_params_bias.begin(),other_params_bias.end());
 		train_bias=new_traniner(algorithm_bias,pc_bias,hyper_params_bias,fullname_bias);
@@ -243,10 +276,47 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 			plumed_massert(lr_wgan.size()==1,"The "+algorithm_wgan+" algorithm need only one learning rates");
 		hyper_params_wgan.insert(hyper_params_wgan.end(),lr_wgan.begin(),lr_wgan.end());
 		
-		parseVector("HYPER_PARAMS_BIAS",other_params_wgan);
 		if(other_params_wgan.size()>0)
 			hyper_params_wgan.insert(hyper_params_wgan.end(),other_params_wgan.begin(),other_params_wgan.end());
 		train_wgan=new_traniner(algorithm_wgan,pc_wgan,hyper_params_wgan,fullname_wgan);
+	}
+	
+	clip_threshold_bias=train_bias->clip_threshold;
+	clip_threshold_wgan=train_wgan->clip_threshold;
+	
+	parse("CLIP_THRESHOLD_BIAS",clip_threshold_bias);
+	parse("CLIP_THRESHOLD_WGAN",clip_threshold_wgan);
+	
+	train_bias->clip_threshold = clip_threshold_bias;
+	train_wgan->clip_threshold = clip_threshold_wgan;
+	
+	unsigned input_dim=narg;
+	for(unsigned i=0;i!=nhidden;++i)
+	{
+		nn_wgan.append(pc_wgan,Layer(input_dim,hidden_layers[i],activation_function(hidden_active[i]),0));
+		input_dim=hidden_layers[i];
+	}
+	nn_wgan.append(pc_wgan,Layer(input_dim,1,LINEAR,0));
+	
+	parm_bias=pc_bias.add_parameters({1,tot_basis});
+	
+	init_coe=as_vector(*parm_bias.values());
+	
+	comm.Barrier();
+	comm.Bcast(init_coe,0);
+
+	unsigned id=0;
+	for(unsigned i=0;i!=nbiases;++i)
+	{
+		std::vector<double> coe(basises_nums[i]);
+		for(unsigned j=0;j!=basises_nums[i];++j)
+		{		
+			if(j==0&&(!opt_const))
+				coe[j]=0;
+			else
+				coe[j]=init_coe[id++];
+		}
+		Coeffs(i).setValues(coe);
 	}
 	
 	kB=plumed.getAtoms().getKBoltzmann();
@@ -261,42 +331,6 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		sim_temp=kBT/kB;
 	}
 	beta=1.0/kBT;
-	
-	nbiases=numberOfCoeffsSets();
-	
-	parseFlag("OPTIMIZE_CONSTANT_PARAMETER",opt_const);
-	
-	tot_basis=0;
-	for(unsigned i=0;i!=nbiases;++i)
-	{
-		unsigned nset=Coeffs(i).getSize();
-		basises_nums.push_back(nset);
-		if(!opt_const)
-			--nset;
-		tot_basis+=nset;
-	}
-	
-	parm_bias=pc_bias.add_parameters({1,tot_basis});
-	
-	std::vector<float> init_coe;
-	
-	if(comm.Get_rank()==0)
-		init_coe=as_vector(*parm_bias.values());
-	comm.Bcast(init_coe,0);
-	
-	unsigned id=0;
-	for(unsigned i=0;i!=nbiases;++i)
-	{
-		std::vector<double> coe(basises_nums[i]);
-		for(unsigned j=0;j!=basises_nums[i];++j)
-		{		
-			if(j==0&&(!opt_const))
-				coe[j]=0;
-			else
-				coe[j]=init_coe[id++];
-		}
-		Coeffs(i).setValues(coe);
-	}
 	
 	parse("DEBUG_FILE",debug_file);
 	if(debug_file.size()>0)
@@ -340,28 +374,8 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		p_target.push_back(p0);
 	}
 	
-	unsigned nhidden=0;
-	parse("HIDDEN_NUMBER",nhidden);
-	
-	std::vector<unsigned> hidden_layers;
-	std::vector<std::string> hidden_active;
-	parseVectorAuto("HIDDEN_LAYER",hidden_layers,nhidden);
-	parseVectorAuto("HIDDEN_ACTIVE",hidden_active,nhidden);
-	
-	parse("CLIP_LEFT",clip_left);
-	parse("CLIP_RIGHT",clip_right);
-	
-	unsigned input_dim=narg;
-	for(unsigned i=0;i!=nhidden;++i)
-	{
-		nn_wgan.append(pc_wgan,Layer(input_dim,hidden_layers[i],activation_function(hidden_active[i]),0));
-		input_dim=hidden_layers[i];
-	}
-	nn_wgan.append(pc_wgan,Layer(input_dim,1,LINEAR,0));
-	
 	if(useMultipleWalkers())
 	{
-		unsigned nw=0;
 		if(comm.Get_rank()==0)
 			nw=multi_sim_comm.Get_size();
 		nepoch*=nw;
@@ -429,6 +443,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	}
 	else
 		log.printf("    with default hyperparameters\n");
+	log.printf("    with clip threshold: %f\n",clip_threshold_wgan);
 	log.printf("    with hidden layers: %d\n",int(nhidden));
 	for(unsigned i=0;i!=nhidden;++i)
 		log.printf("      Hidden layer %d with dimension %d and activation function \"%s\"\n",int(i),int(hidden_layers[i]),hidden_active[i].c_str());
@@ -451,6 +466,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	}
 	else
 		log.printf("    with default hyperparameters\n");
+	log.printf("    with clip threshold: %f\n",clip_threshold_bias);
 	
 	log.printf("  Use epoch number %d and batch size %d to update the two networks\n",int(nepoch),int(batch_size));
 	log << plumed.cite("Zhang and Noe");
@@ -490,19 +506,25 @@ void Opt_TALOS::update()
 	
 	if(is_debug)
 	{
-		ComputationGraph cg;
-		Expression W = parameter(cg,parm_bias);
-		Expression x = input(cg,{tot_basis},&debug_vec);
-		Expression y_pred = W * x;
+		std::vector<float> pred(tot_basis,0);
+		if(comm.Get_rank()==0)
+		{
+			ComputationGraph cg;
+			Expression W = parameter(cg,parm_bias);
+			Expression x = input(cg,{tot_basis},&debug_vec);
+			Expression y_pred = W * x;
+			
+			pred=as_vector(cg.forward(y_pred));
+		}
 		
-		std::vector<float> pred=as_vector(cg.forward(y_pred));
+		comm.Barrier();
+		comm.Bcast(pred,0);
 		
 		for(unsigned i=0;i!=pred.size();++i)
 		{
 			std::string ff="PRED"+std::to_string(i);
 			odebug.printField(ff,pred[i]);
 		}
-		
 		//~ std::vector<float> ww=as_vector(W.value());
 		//~ std::vector<float> xx=as_vector(x.value());
 		//~ 
@@ -516,51 +538,64 @@ void Opt_TALOS::update()
 			//~ std::string ff="x"+std::to_string(i);
 			//~ odebug.printField(ff,xx[i]);
 		//~ }
-		
 		odebug.printField();
 		odebug.flush();
 	}
-	
+
 	++counts;
 	++step;
 	
 	if(step%update_steps==0&&counts>0)
 	{
-		//~ std::cout<<counts<<std::endl;
-		double wloss;
-		double bloss;
-		std::vector<float> new_coe;
-		if(comm.Get_rank()==0)
+		comm.Barrier();
+		if(input_arg.size()!=narg*update_steps)
+			plumed_merror("ERROR! The size of the input_arg mismatch: "+std::to_string(input_arg.size()));
+		if(input_bias.size()!=tot_basis*update_steps)
+			plumed_merror("ERROR! The size of the input_bias mismatch: "+std::to_string(input_bias.size()));
+		
+		double wloss=0;
+		double bloss=0;
+		std::vector<float> new_coe(tot_basis);
+		std::vector<std::vector<float>> vec_fw;
+		if(useMultipleWalkers())
 		{
+			multi_sim_comm.Sum(counts);
+			
 			std::vector<float> all_input_arg;
 			std::vector<float> all_input_bias;
-			if(useMultipleWalkers())
+			
+			all_input_arg.resize(nw*narg*update_steps,0);
+			all_input_bias.resize(nw*tot_basis*update_steps,0);
+			
+			if(comm.Get_rank()==0)
 			{
-				multi_sim_comm.Sum(counts);
-		
-				unsigned nw=0;
-				nw=multi_sim_comm.Get_size();
-				
-				all_input_arg.resize(nw*narg*update_steps,0);
-				all_input_bias.resize(nw*numberOfCoeffsSets()*update_steps,0);
-				
 				multi_sim_comm.Allgather(input_arg,all_input_arg);
 				multi_sim_comm.Allgather(input_bias,all_input_bias);
 			}
-			else
-			{
-				all_input_arg=input_arg;
-				all_input_bias=input_bias;
-			}
+			comm.Bcast(all_input_arg,0);
+			comm.Bcast(all_input_bias,0);
 			
-			std::vector<std::vector<float>> vec_fw;
-			wloss=update_wgan(all_input_arg,vec_fw);
-			bloss=update_bias(all_input_bias,vec_fw,new_coe);
+			if(comm.Get_rank()==0)
+			{
+				wloss=update_wgan(all_input_arg,vec_fw);
+				bloss=update_bias(all_input_bias,vec_fw,new_coe);
+				vec_fw.resize(0);
+			}
 		}
+		else
+		{
+			if(comm.Get_rank()==0)
+			{
+				wloss=update_wgan(input_arg,vec_fw);
+				bloss=update_bias(input_bias,vec_fw,new_coe);
+				vec_fw.resize(0);
+			}
+		}
+		comm.Barrier();
 		comm.Bcast(wloss,0);
 		comm.Bcast(bloss,0);
 		comm.Bcast(new_coe,0);
-		
+
 		valueLwgan->set(wloss);
 		valueLbias->set(bloss);
 		
@@ -580,7 +615,7 @@ void Opt_TALOS::update()
 					coe[j]=new_coe[id++];
 			}
 			Coeffs(i).setValues(coe);
-			
+
 			unsigned int curr_iter = getIterationCounter()+1;
 			double curr_time = getTime();
 			getCoeffsPntrs()[i]->setIterationCounterAndTime(curr_iter,curr_time);

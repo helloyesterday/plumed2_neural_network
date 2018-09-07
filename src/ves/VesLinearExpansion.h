@@ -42,7 +42,7 @@ class VesLinearExpansion : public VesBias {
 private:
   unsigned int nargs_;
   // the value of coefficient of each basis function (added by YI Yang)
-  std::vector<double> coeffsderivs_values;
+  std::vector<double> coeffsderivs_values_store;
   std::vector<BasisFunctions*> basisf_pntrs_;
   LinearBasisSetExpansion* bias_expansion_pntr_;
   size_t ncoeffs_;
@@ -74,7 +74,7 @@ public:
   std::vector<BasisFunctions*> get_basisf_pntrs() const {return basisf_pntrs_;}
   LinearBasisSetExpansion* get_bias_expansion_pntr() const {return bias_expansion_pntr_;}
   // the value of coefficient of each basis function (added by YI Yang)
-  void getBasisSetValues(std::vector<double>& bs_values) {bs_values=coeffsderivs_values;}
+  void getBasisSetValues(std::vector<double>& bs_values) {bs_values=coeffsderivs_values_store;}
   // Added by Y. Isaac Yang to calculate the reweighting factor
   void updateReweightingFactor();
   //

@@ -320,7 +320,7 @@ VesLinearExpansion::VesLinearExpansion(const ActionOptions&ao):
   bool coeffs_read = readCoeffsFromFiles();
   
   // Added by Yi Isaac Yang
-  coeffsderivs_values.resize(ncoeffs_);
+  coeffsderivs_values_store.resize(ncoeffs_,0);
 
   checkThatTemperatureIsGiven();
   bias_expansion_pntr_ = new LinearBasisSetExpansion(getLabel(),getBeta(),comm,args_pntrs,basisf_pntrs_,getCoeffsPntr());
@@ -375,6 +375,7 @@ void VesLinearExpansion::calculate() {
 
   std::vector<double> cv_values(nargs_);
   std::vector<double> forces(nargs_);
+  std::vector<double> coeffsderivs_values(ncoeffs_,0);
   // change it as a member value of the class VesLinearExpansion (by YI Yang)
   //~ std::vector<double> coeffsderivs_values(ncoeffs_);
 
@@ -385,6 +386,7 @@ void VesLinearExpansion::calculate() {
   bool all_inside = true;
   
   double bias = bias_expansion_pntr_->getBiasAndForces(cv_values,all_inside,forces,coeffsderivs_values);
+  coeffsderivs_values_store=coeffsderivs_values;
   if(biasCutoffActive()) {
     applyBiasCutoff(bias,forces,coeffsderivs_values);
     coeffsderivs_values[0]=1.0;
