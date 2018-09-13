@@ -61,6 +61,8 @@ private:
 	bool is_debug;
 	bool opt_const;
 	
+	unsigned random_seed;
+	
 	unsigned narg;
 	unsigned nbiases;
 	unsigned tot_basis;
@@ -71,6 +73,7 @@ private:
 	unsigned counts;
 	unsigned update_steps;
 	unsigned nw;
+	unsigned iter_time;
 	
 	double kB;
 	double kBT;
@@ -124,7 +127,7 @@ private:
 	Value* valueLbias;
 	
 	float update_wgan(const std::vector<float>&,std::vector<std::vector<float>>&);
-	float update_bias(const std::vector<float>&,const std::vector<std::vector<float>>&,std::vector<float>&);
+	float update_bias(const std::vector<float>&,const std::vector<std::vector<float>>&);
 	
 	Trainer* new_traniner(const std::string&,ParameterCollection&,std::string&);
 	Trainer* new_traniner(const std::string&,ParameterCollection&,const std::vector<float>&,std::string&);
@@ -156,6 +159,7 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   //~ keys.add("compulsory","ARG","the arguments used to set the target distribution");
   keys.remove("STRIDE");
   keys.remove("STEPSIZE");
+  keys.add("compulsory","ARG_PERIODIC","NO","if the arguments are periodic or not");
   keys.add("compulsory","ALGORITHM_BIAS","ADAM","the algorithm to train the neural network of bias function");
   keys.add("compulsory","ALGORITHM_WGAN","ADAM","the algorithm to train the W-GAN");
   keys.add("compulsory","UPDATE_STEPS","250","the number of step to update");
@@ -196,10 +200,13 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
   PLUMED_VES_OPTIMIZER_INIT(ao),
   ActionWithArguments(ao),
   is_debug(false),
+  random_seed(0),
   narg(getNumberOfArguments()),
   step(0),
   counts(0),
   nw(1),
+  iter_time(0),
+  args_periodic(getNumberOfArguments(),false),
   grid_space(getNumberOfArguments()),
   train_bias(NULL),
   train_wgan(NULL),
@@ -209,7 +216,42 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	char pp[]="plumed";
 	char *vv[]={pp};
 	char** ivv=vv;
-	dynet::initialize(cc,ivv);
+	DynetParams params = extract_dynet_params(cc,ivv);
+	if(useMultipleWalkers())
+	{
+		if(multi_sim_comm.Get_rank()==0)
+		{
+			if(comm.Get_rank()==0)
+			{
+				dynet::initialize(params);
+				random_seed=params.random_seed;
+			}
+			comm.Barrier();
+			comm.Bcast(random_seed,0);
+			params.random_seed=random_seed;
+			if(comm.Get_rank()!=0)
+				dynet::initialize(params);
+		}
+		multi_sim_comm.Barrier();
+		multi_sim_comm.Bcast(random_seed,0);
+		comm.Bcast(random_seed,0);
+		params.random_seed=random_seed;
+		if(multi_sim_comm.Get_rank()!=0)
+			dynet::initialize(params);
+	}
+	else
+	{
+		if(comm.Get_rank()==0)
+		{
+			dynet::initialize(params);
+			random_seed=params.random_seed;
+		}
+		comm.Barrier();
+		comm.Bcast(random_seed,0);
+		params.random_seed=random_seed;
+		if(comm.Get_rank()!=0)
+			dynet::initialize(params);
+	}
 	
 	setStride(1);
 	parse("UPDATE_STEPS",update_steps);
@@ -300,8 +342,22 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	
 	parm_bias=pc_bias.add_parameters({1,tot_basis});
 	
-	init_coe=as_vector(*parm_bias.values());
+	init_coe.resize(tot_basis);
 	
+	if(useMultipleWalkers())
+	{
+		if(multi_sim_comm.Get_rank()==0)
+		{
+			if(comm.Get_rank()==0)
+				init_coe=as_vector(*parm_bias.values());
+			comm.Barrier();
+			comm.Bcast(init_coe,0);
+		}
+		multi_sim_comm.Barrier();
+		multi_sim_comm.Bcast(init_coe,0);
+	}
+	else if(comm.Get_rank()==0)
+		init_coe=as_vector(*parm_bias.values());
 	comm.Barrier();
 	comm.Bcast(init_coe,0);
 
@@ -338,8 +394,21 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		is_debug=true;
 		odebug.link(*this);
 		odebug.open(debug_file);
+		odebug.addConstantField("ITERATION");
 	}
 
+	std::vector<std::string> arg_perd_str;
+	parseVectorAuto("ARG_PERIODIC",arg_perd_str,narg);
+	for(unsigned i=0;i!=narg;++i)
+	{
+		if(arg_perd_str[i]=="Yes"||arg_perd_str[i]=="yes"||arg_perd_str[i]=="YES")
+			args_periodic[i]=true;
+		else if(arg_perd_str[i]=="No"||arg_perd_str[i]=="no"||arg_perd_str[i]=="NO")
+			args_periodic[i]=false;
+		else
+			plumed_merror("Cannot understand the ARG_PERIODIC type: "+arg_perd_str[i]);
+	}
+	
 	parse("EPOCH_NUM",nepoch);
 	plumed_massert(nepoch>0,"EPOCH_NUM must be larger than 0!");
 	batch_size=update_steps/nepoch;
@@ -352,17 +421,25 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	ntarget=1;
 	for(unsigned i=0;i!=narg;++i)
 	{
+		grid_space[i]=(grid_max[i]-grid_min[i])/grid_bins[i];
+		if(!args_periodic[i])
+			++grid_bins[i];
 		ntarget*=grid_bins[i];
-		grid_space[i]=(grid_max[i]-grid_min[i])/(grid_bins[i]+1);
 	}
 	
+	std::vector<std::vector<float>> target_points;
 	std::vector<unsigned> argid(narg,0);
 	float p0=1.0/ntarget;
 	for(unsigned i=0;i!=ntarget;++i)
 	{
+		std::vector<float> vtt;
 		for(unsigned j=0;j!=narg;++j)
 		{
-			input_target.push_back(grid_min[j]+grid_space[j]*argid[j]+grid_space[j]/2.0);
+			float tt=grid_min[j]+grid_space[j]*argid[j];
+			if(args_periodic[j])
+				tt+=grid_space[j]/2.0;
+			vtt.push_back(tt);
+			input_target.push_back(tt);
 			if(j==0)
 				++argid[j];
 			else if(argid[j-1]==grid_bins[j-1])
@@ -371,6 +448,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 				argid[j-1]%=grid_bins[j-1];
 			}
 		}
+		target_points.push_back(vtt);
 		p_target.push_back(p0);
 	}
 	
@@ -390,6 +468,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	turnOffHessian();
 	checkRead();
 	
+	log.printf("  with random seed: %s\n",std::to_string(random_seed).c_str());
 	log.printf("  with lower boundary of the grid:");
 	for(unsigned i=0;i!=grid_min.size();++i)
 		log.printf(" %f",grid_min[i]);
@@ -402,7 +481,18 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	for(unsigned i=0;i!=grid_bins.size();++i)
 		log.printf(" %d",grid_bins[i]);
 	log.printf("\n");
-	log.printf("  with total target segments: %d\n",int(ntarget));
+	if(is_debug)
+	{
+		log.printf("  with target distribution:\n");
+		for(unsigned i=0;i!=ntarget;++i)
+		{
+			log.printf("    target %d:",int(i));
+			for(unsigned j=0;j!=narg;++j)
+				log.printf(" %f,",target_points[i][j]);
+			log.printf(" with %f\n",p_target[i]);
+		}
+		log.printf("  with total target segments: %d\n",int(ntarget));
+	}
 	
 	log.printf("  with simulation temperature: %f\n",sim_temp);
 	log.printf("  with boltzmann constant: %f\n",kB);
@@ -507,6 +597,8 @@ void Opt_TALOS::update()
 	if(is_debug)
 	{
 		std::vector<float> pred(tot_basis,0);
+		std::vector<float> ww(tot_basis,0);
+		std::vector<float> xx(tot_basis,0);
 		if(comm.Get_rank()==0)
 		{
 			ComputationGraph cg;
@@ -514,32 +606,48 @@ void Opt_TALOS::update()
 			Expression x = input(cg,{tot_basis},&debug_vec);
 			Expression y_pred = W * x;
 			
+			if(counts==0)
+			{
+				ww=as_vector(W.value());
+				xx=as_vector(x.value());
+			}
 			pred=as_vector(cg.forward(y_pred));
 		}
-		
 		comm.Barrier();
 		comm.Bcast(pred,0);
+		if(counts==0)
+		{
+			comm.Bcast(ww,0);
+			comm.Bcast(xx,0);
+		}
 		
 		for(unsigned i=0;i!=pred.size();++i)
 		{
 			std::string ff="PRED"+std::to_string(i);
 			odebug.printField(ff,pred[i]);
 		}
-		//~ std::vector<float> ww=as_vector(W.value());
-		//~ std::vector<float> xx=as_vector(x.value());
-		//~ 
-		//~ for(unsigned i=0;i!=ww.size();++i)
-		//~ {
-			//~ std::string ff="W"+std::to_string(i);
-			//~ odebug.printField(ff,ww[i]);
-		//~ }
-		//~ for(unsigned i=0;i!=xx.size();++i)
-		//~ {
-			//~ std::string ff="x"+std::to_string(i);
-			//~ odebug.printField(ff,xx[i]);
-		//~ }
 		odebug.printField();
 		odebug.flush();
+		
+		if(counts==0)
+		{
+			odebug.printField("time",getTime());
+			for(unsigned i=0;i!=ww.size();++i)
+			{
+				std::string ff="W"+std::to_string(i);
+				odebug.printField(ff,ww[i]);
+			}
+			odebug.printField();
+			
+			odebug.printField("time",getTime());
+			for(unsigned i=0;i!=xx.size();++i)
+			{
+				std::string ff="x"+std::to_string(i);
+				odebug.printField(ff,xx[i]);
+			}
+			odebug.printField();
+			odebug.flush();
+		}
 	}
 
 	++counts;
@@ -552,10 +660,10 @@ void Opt_TALOS::update()
 			plumed_merror("ERROR! The size of the input_arg mismatch: "+std::to_string(input_arg.size()));
 		if(input_bias.size()!=tot_basis*update_steps)
 			plumed_merror("ERROR! The size of the input_bias mismatch: "+std::to_string(input_bias.size()));
-		
+
 		double wloss=0;
 		double bloss=0;
-		std::vector<float> new_coe(tot_basis);
+		std::vector<float> new_coe(tot_basis,0);
 		std::vector<std::vector<float>> vec_fw;
 		if(useMultipleWalkers())
 		{
@@ -575,20 +683,33 @@ void Opt_TALOS::update()
 			comm.Bcast(all_input_arg,0);
 			comm.Bcast(all_input_bias,0);
 			
-			if(comm.Get_rank()==0)
+			if(multi_sim_comm.Get_rank()==0)
 			{
-				wloss=update_wgan(all_input_arg,vec_fw);
-				bloss=update_bias(all_input_bias,vec_fw,new_coe);
-				vec_fw.resize(0);
+				if(comm.Get_rank()==0)
+				{
+					wloss=update_wgan(all_input_arg,vec_fw);
+					bloss=update_bias(all_input_bias,vec_fw);
+					vec_fw.resize(0);
+					new_coe=as_vector(*parm_bias.values());
+				}
+				comm.Barrier();
+				comm.Bcast(wloss,0);
+				comm.Bcast(bloss,0);
+				comm.Bcast(new_coe,0);
 			}
+			multi_sim_comm.Barrier();
+			multi_sim_comm.Bcast(wloss,0);
+			multi_sim_comm.Bcast(bloss,0);
+			multi_sim_comm.Bcast(new_coe,0);
 		}
 		else
 		{
 			if(comm.Get_rank()==0)
 			{
 				wloss=update_wgan(input_arg,vec_fw);
-				bloss=update_bias(input_bias,vec_fw,new_coe);
+				bloss=update_bias(input_bias,vec_fw);
 				vec_fw.resize(0);
+				new_coe=as_vector(*parm_bias.values());
 			}
 		}
 		comm.Barrier();
@@ -602,6 +723,20 @@ void Opt_TALOS::update()
 		input_arg.resize(0);
 		input_bias.resize(0);
 		counts=0;
+		
+		++iter_time;
+		
+		if(is_debug)
+		{
+			odebug.printField("ITERATION",int(iter_time));
+			odebug.printField("time",getTime());
+			for(unsigned i=0;i!=new_coe.size();++i)
+			{
+				odebug.printField("Coe"+std::to_string(i),new_coe[i]);
+			}
+			odebug.printField();
+			odebug.flush();
+		}
 
 		unsigned id=0;
 		for(unsigned i=0;i!=nbiases;++i)
@@ -663,6 +798,8 @@ float Opt_TALOS::update_wgan(const std::vector<float>& all_input_arg,std::vector
 	ComputationGraph cg;
 	Dim xs_dim({narg},batch_size);
 	Dim xt_dim({narg},ntarget);
+	
+	//~ std::random_shuffle(input_target.begin(), input_target.end());
 
 	unsigned wsize=batch_size*narg;
 	std::vector<float> input_sample(wsize);
@@ -704,7 +841,7 @@ float Opt_TALOS::update_wgan(const std::vector<float>& all_input_arg,std::vector
 }
 
 // update the coeffients of the basis function
-float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std::vector<std::vector<float>>& vec_fw,std::vector<float>& new_coe)
+float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std::vector<std::vector<float>>& vec_fw)
 {
 	ComputationGraph cg;
 	Expression W = parameter(cg,parm_bias);
@@ -731,7 +868,7 @@ float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std:
 	}
 	bloss/=nepoch;
 	
-	new_coe=as_vector(W.value());
+	//~ new_coe=as_vector(W.value());
 	return bloss;
 }
 
