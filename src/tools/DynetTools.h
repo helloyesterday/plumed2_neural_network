@@ -27,6 +27,9 @@ namespace dytools {
 
 using namespace dynet;
 
+Trainer* new_traniner(const std::string& algorithm,ParameterCollection& pc,std::string& fullname);
+Trainer* new_traniner(const std::string& algorithm,ParameterCollection& pc,const std::vector<float>& params,std::string& fullname);
+
 /**
  * \ingroup ffbuilders
  * Common activation functions used in multilayer perceptrons
@@ -101,8 +104,8 @@ public:
   unsigned get_layers() const {return LAYERS;}
   unsigned get_output_dim() const {return input_dim;}
   unsigned get_input_dim() const {return output_dim;}
-  void clip(float left,float right);
-  void clip_inplace(float left,float right);
+  void clip(float left,float right,bool clip_last_layer=false);
+  void clip_inplace(float left,float right,bool clip_last_layer=false);
   
    /**
    * \brief Default constructor
@@ -195,6 +198,9 @@ public:
   bool is_dropout_enabled() {
     return dropout_active;
   }
+  
+  void MLP::set_parameters(const std::vector<std::vector<std::vector<float>>>&)
+  void MLP::set_parameters(const std::vector<std::vector<float>>&,unsigned)
 
 private:
   inline Expression activate(Expression h, Activation f);

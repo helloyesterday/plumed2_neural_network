@@ -242,22 +242,80 @@ int MLP::predict(Expression x,ComputationGraph& cg)
     return argmax;
 }
 
-void MLP::clip(float left,float right)
+void MLP::clip(float left,float right,bool clip_last_layer)
 {
 	for(unsigned i=0;i!=params.size();++i)
 	{
-		for(unsigned j=0;j!=params[i].size();++j)
-			params[i][j].get_storage().clip(left,right);
+		if((i+1)!=params.size()||clip_last_layer)
+		{
+			for(unsigned j=0;j!=params[i].size();++j)
+				params[i][j].get_storage().clip(left,right);
+		}
 	}
 }
 
-void MLP::clip_inplace(float left,float right)
+void MLP::clip_inplace(float left,float right,bool clip_last_layer)
 {
 	for(unsigned i=0;i!=params.size();++i)
 	{
-		for(unsigned j=0;j!=params[i].size();++j)
-			params[i][j].clip_inplace(left,right);
+		if((i+1)!=params.size()||clip_last_layer)
+		{
+			for(unsigned j=0;j!=params[i].size();++j)
+				params[i][j].clip_inplace(left,right);
+		}
 	}
+}
+
+std::vector<std::vector<std::vector<float>>> MLP::get_parameters()
+{
+	std::vector<std::vector<std::vector<float>>> values;
+	for(unsigned i=0;i!=params.size();++i)
+	{
+		std::vector<std::vector<float>> vv;
+		for(unsigned j=0;j!=params[i].size();++j)
+			vv.push_back(as_vector(*params[i][j].value()));
+	}
+	values.push_back(vv);
+	return values;
+}
+
+std::vector<std::vector<float>> MLP::get_parameters(unsigned layer_id)
+{
+	std::vector<std::vector<float>> values;
+	for(unsigned j=0;j!=params[layer_id].size();++j)
+		values.push_back(as_vector(*params[layer_id][j].value()));
+
+	return values;
+}
+
+void MLP::set_parameters(const std::vector<std::vector<std::vector<float>>>& new_params)
+{
+	if(new_params.size()!=params.size())
+	{
+		std::cerr<<"ERROR! The number of layers of the input parameters mismatch!"::std::endl;
+		exit(-1);
+	}
+	for(unsigned i=0;i!=params.size();++i)
+	{
+		if(new_params[i].size()!=params[i].size())
+		{
+			std::cerr<<"ERROR! The size of the "<<i<<" layer of the input parameters mismatch!"::std::endl;
+			exit(-1);
+		}
+		for(unsigned j=0;j!=params[i].size();++j)
+			params[i][j].set_value(new_params[i][j]);
+	}
+}
+
+void MLP::set_parameters(const std::vector<std::vector<float>>& new_params,unsigned layer_id)
+{
+	if(new_params.size()!=params[layer_id].size())
+	{
+		std::cerr<<"ERROR! The size of the input parameters mismatch!"::std::endl;
+		exit(-1);
+	}
+	for(unsigned j=0;j!=params[i].size();++j)
+		params[layer_id][j].set_value(new_params[j]);
 }
 
 inline Expression MLP::activate(Expression h, Activation f)
@@ -393,6 +451,162 @@ float WGAN::update(Trainer& trainer)
 	cg.backward(loss_expr,true);
 	trainer.update();
 	return loss;
+}
+
+Trainer* new_traniner(const std::string& algorithm,ParameterCollection& pc,std::string& fullname)
+{
+	if(algorithm=="SimpleSGD"||algorithm=="simpleSGD"||algorithm=="simplesgd"||algorithm=="SGD"||algorithm=="sgd")
+	{
+		fullname="Stochastic gradient descent";
+		Trainer *trainer = new SimpleSGDTrainer(pc);
+		return trainer;
+	}
+	if(algorithm=="CyclicalSGD"||algorithm=="cyclicalSGD"||algorithm=="cyclicalsgd"||algorithm=="CSGD"||algorithm=="csgd")
+	{
+		fullname="Cyclical learning rate SGD";
+		Trainer *trainer = new CyclicalSGDTrainer(pc);
+		return trainer;
+	}
+	if(algorithm=="MomentumSGD"||algorithm=="momentumSGD"||algorithm=="momentumSGD"||algorithm=="MSGD"||algorithm=="msgd")
+	{
+		fullname="SGD with momentum";
+		Trainer *trainer = new MomentumSGDTrainer(pc);
+		return trainer;
+	}
+	if(algorithm=="Adagrad"||algorithm=="adagrad"||algorithm=="adag"||algorithm=="ADAG")
+	{
+		fullname="Adagrad optimizer";
+		Trainer *trainer = new AdagradTrainer(pc);
+		return trainer;
+	}
+	if(algorithm=="Adadelta"||algorithm=="adadelta"||algorithm=="AdaDelta"||algorithm=="AdaD"||algorithm=="adad"||algorithm=="ADAD")
+	{
+		fullname="AdaDelta optimizer";
+		Trainer *trainer = new AdadeltaTrainer(pc);
+		return trainer;
+	}
+	if(algorithm=="RMSProp"||algorithm=="rmsprop"||algorithm=="rmsp"||algorithm=="RMSP")
+	{
+		fullname="RMSProp optimizer";
+		Trainer *trainer = new RMSPropTrainer(pc);
+		return trainer;
+	}
+	if(algorithm=="Adam"||algorithm=="adam"||algorithm=="ADAM")
+	{
+		fullname="Adam optimizer";
+		Trainer *trainer = new AdamTrainer(pc);
+		return trainer;
+	}
+	if(algorithm=="AMSGrad"||algorithm=="Amsgrad"||algorithm=="Amsg"||algorithm=="amsg")
+	{
+		fullname="AMSGrad optimizer";
+		Trainer *trainer = new AmsgradTrainer(pc);
+		return trainer;
+	}
+	return NULL;
+}
+
+Trainer* new_traniner(const std::string& algorithm,ParameterCollection& pc,const std::vector<float>& params,std::string& fullname)
+{
+	if(params.size()==0)
+		return new_traniner(algorithm,pc,fullname);
+
+	if(algorithm=="SimpleSGD"||algorithm=="simpleSGD"||algorithm=="simplesgd"||algorithm=="SGD"||algorithm=="sgd")
+	{
+		fullname="Stochastic gradient descent";
+		Trainer *trainer = new SimpleSGDTrainer(pc,params[0]);
+		return trainer;
+	}
+	if(algorithm=="CyclicalSGD"||algorithm=="cyclicalSGD"||algorithm=="cyclicalsgd"||algorithm=="CSGD"||algorithm=="csgd")
+	{
+		fullname="Cyclical learning rate SGD";
+		Trainer *trainer=NULL;
+		if(params.size()<2)
+		{
+			std::cerr<<"ERROR! CyclicalSGD needs at least two learning rates"<<std::endl;
+			exit(-1);
+		}
+		else if(params.size()==2)
+			trainer = new CyclicalSGDTrainer(pc,params[0],params[1]);
+		else if(params.size()==3)
+			trainer = new CyclicalSGDTrainer(pc,params[0],params[1],params[2]);
+		else if(params.size()==4)
+			trainer = new CyclicalSGDTrainer(pc,params[0],params[1],params[2],params[3]);
+		else
+			trainer = new CyclicalSGDTrainer(pc,params[0],params[1],params[2],params[3],params[4]);
+		return trainer;
+	}
+	if(algorithm=="MomentumSGD"||algorithm=="momentumSGD"||algorithm=="momentumSGD"||algorithm=="MSGD"||algorithm=="msgd")
+	{
+		fullname="SGD with momentum";
+		Trainer *trainer=NULL;
+		if(params.size()==1)
+			trainer = new MomentumSGDTrainer(pc,params[0]);
+		else
+			trainer = new MomentumSGDTrainer(pc,params[0],params[1]);
+		return trainer;
+	}
+	if(algorithm=="Adagrad"||algorithm=="adagrad"||algorithm=="adag"||algorithm=="ADAG")
+	{
+		fullname="Adagrad optimizer";
+		Trainer *trainer=NULL;
+		if(params.size()==1)
+			trainer = new AdagradTrainer(pc,params[0]);
+		else
+			trainer = new AdagradTrainer(pc,params[0],params[1]);
+		return trainer;
+	}
+	if(algorithm=="Adadelta"||algorithm=="adadelta"||algorithm=="AdaDelta"||algorithm=="AdaD"||algorithm=="adad"||algorithm=="ADAD")
+	{
+		fullname="AdaDelta optimizer";
+		Trainer *trainer=NULL;
+		if(params.size()==1)
+			trainer = new AdadeltaTrainer(pc,params[0]);
+		else
+			trainer = new AdadeltaTrainer(pc,params[0],params[1]);
+		return trainer;
+	}
+	if(algorithm=="RMSProp"||algorithm=="rmsprop"||algorithm=="rmsp"||algorithm=="RMSP")
+	{
+		fullname="RMSProp optimizer";
+		Trainer *trainer=NULL;
+		if(params.size()==1)
+			trainer = new RMSPropTrainer(pc,params[0]);
+		else if(params.size()==2)
+			trainer = new RMSPropTrainer(pc,params[0],params[1]);
+		else
+			trainer = new RMSPropTrainer(pc,params[0],params[1],params[2]);
+		return trainer;
+	}
+	if(algorithm=="Adam"||algorithm=="adam"||algorithm=="ADAM")
+	{
+		fullname="Adam optimizer";
+		Trainer *trainer=NULL;
+		if(params.size()==1)
+			trainer = new AdamTrainer(pc,params[0]);
+		else if(params.size()==2)
+			trainer = new AdamTrainer(pc,params[0],params[1]);
+		else if(params.size()==3)
+			trainer = new AdamTrainer(pc,params[0],params[1],params[2]);
+		else
+			trainer = new AdamTrainer(pc,params[0],params[1],params[2],params[3]);
+		return trainer;
+	}
+	if(algorithm=="AMSGrad"||algorithm=="Amsgrad"||algorithm=="Amsg"||algorithm=="amsg")
+	{
+		fullname="AMSGrad optimizer";
+		Trainer *trainer=NULL;
+		if(params.size()==1)
+			trainer = new AmsgradTrainer(pc,params[0]);
+		else if(params.size()==2)
+			trainer = new AmsgradTrainer(pc,params[0],params[1]);
+		else if(params.size()==3)
+			trainer = new AmsgradTrainer(pc,params[0],params[1],params[2]);
+		else
+			trainer = new AmsgradTrainer(pc,params[0],params[1],params[2],params[3]);
+		return trainer;
+	}
+	return NULL;
 }
 
 

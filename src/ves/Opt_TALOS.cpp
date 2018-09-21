@@ -128,9 +128,7 @@ private:
 	
 	float update_wgan(const std::vector<float>&,std::vector<std::vector<float>>&);
 	float update_bias(const std::vector<float>&,const std::vector<std::vector<float>>&);
-	
-	Trainer* new_traniner(const std::string&,ParameterCollection&,std::string&);
-	Trainer* new_traniner(const std::string&,ParameterCollection&,const std::vector<float>&,std::string&);
+
 public:
 	static void registerKeywords(Keywords&);
 	explicit Opt_TALOS(const ActionOptions&);
@@ -217,6 +215,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	char *vv[]={pp};
 	char** ivv=vv;
 	DynetParams params = extract_dynet_params(cc,ivv);
+	
 	if(useMultipleWalkers())
 	{
 		if(multi_sim_comm.Get_rank()==0)
@@ -872,158 +871,7 @@ float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std:
 	return bloss;
 }
 
-Trainer* Opt_TALOS::new_traniner(const std::string& algorithm,ParameterCollection& pc,std::string& fullname)
-{
-	if(algorithm=="SimpleSGD"||algorithm=="simpleSGD"||algorithm=="simplesgd"||algorithm=="SGD"||algorithm=="sgd")
-	{
-		fullname="Stochastic gradient descent";
-		Trainer *trainer = new SimpleSGDTrainer(pc);
-		return trainer;
-	}
-	if(algorithm=="CyclicalSGD"||algorithm=="cyclicalSGD"||algorithm=="cyclicalsgd"||algorithm=="CSGD"||algorithm=="csgd")
-	{
-		fullname="Cyclical learning rate SGD";
-		Trainer *trainer = new CyclicalSGDTrainer(pc);
-		return trainer;
-	}
-	if(algorithm=="MomentumSGD"||algorithm=="momentumSGD"||algorithm=="momentumSGD"||algorithm=="MSGD"||algorithm=="msgd")
-	{
-		fullname="SGD with momentum";
-		Trainer *trainer = new MomentumSGDTrainer(pc);
-		return trainer;
-	}
-	if(algorithm=="Adagrad"||algorithm=="adagrad"||algorithm=="adag"||algorithm=="ADAG")
-	{
-		fullname="Adagrad optimizer";
-		Trainer *trainer = new AdagradTrainer(pc);
-		return trainer;
-	}
-	if(algorithm=="Adadelta"||algorithm=="adadelta"||algorithm=="AdaDelta"||algorithm=="AdaD"||algorithm=="adad"||algorithm=="ADAD")
-	{
-		fullname="AdaDelta optimizer";
-		Trainer *trainer = new AdadeltaTrainer(pc);
-		return trainer;
-	}
-	if(algorithm=="RMSProp"||algorithm=="rmsprop"||algorithm=="rmsp"||algorithm=="RMSP")
-	{
-		fullname="RMSProp optimizer";
-		Trainer *trainer = new RMSPropTrainer(pc);
-		return trainer;
-	}
-	if(algorithm=="Adam"||algorithm=="adam"||algorithm=="ADAM")
-	{
-		fullname="Adam optimizer";
-		Trainer *trainer = new AdamTrainer(pc);
-		return trainer;
-	}
-	if(algorithm=="AMSGrad"||algorithm=="Amsgrad"||algorithm=="Amsg"||algorithm=="amsg")
-	{
-		fullname="AMSGrad optimizer";
-		Trainer *trainer = new AmsgradTrainer(pc);
-		return trainer;
-	}
-	return NULL;
-}
 
-Trainer* Opt_TALOS::new_traniner(const std::string& algorithm,ParameterCollection& pc,const std::vector<float>& params,std::string& fullname)
-{
-	if(params.size()==0)
-		return new_traniner(algorithm,pc,fullname);
-
-	if(algorithm=="SimpleSGD"||algorithm=="simpleSGD"||algorithm=="simplesgd"||algorithm=="SGD"||algorithm=="sgd")
-	{
-		fullname="Stochastic gradient descent";
-		Trainer *trainer = new SimpleSGDTrainer(pc,params[0]);
-		return trainer;
-	}
-	if(algorithm=="CyclicalSGD"||algorithm=="cyclicalSGD"||algorithm=="cyclicalsgd"||algorithm=="CSGD"||algorithm=="csgd")
-	{
-		fullname="Cyclical learning rate SGD";
-		Trainer *trainer=NULL;
-		if(params.size()<2)
-			plumed_merror("CyclicalSGD needs at least two learning rates");
-		else if(params.size()==2)
-			trainer = new CyclicalSGDTrainer(pc,params[0],params[1]);
-		else if(params.size()==3)
-			trainer = new CyclicalSGDTrainer(pc,params[0],params[1],params[2]);
-		else if(params.size()==4)
-			trainer = new CyclicalSGDTrainer(pc,params[0],params[1],params[2],params[3]);
-		else
-			trainer = new CyclicalSGDTrainer(pc,params[0],params[1],params[2],params[3],params[4]);
-		return trainer;
-	}
-	if(algorithm=="MomentumSGD"||algorithm=="momentumSGD"||algorithm=="momentumSGD"||algorithm=="MSGD"||algorithm=="msgd")
-	{
-		fullname="SGD with momentum";
-		Trainer *trainer=NULL;
-		if(params.size()==1)
-			trainer = new MomentumSGDTrainer(pc,params[0]);
-		else
-			trainer = new MomentumSGDTrainer(pc,params[0],params[1]);
-		return trainer;
-	}
-	if(algorithm=="Adagrad"||algorithm=="adagrad"||algorithm=="adag"||algorithm=="ADAG")
-	{
-		fullname="Adagrad optimizer";
-		Trainer *trainer=NULL;
-		if(params.size()==1)
-			trainer = new AdagradTrainer(pc,params[0]);
-		else
-			trainer = new AdagradTrainer(pc,params[0],params[1]);
-		return trainer;
-	}
-	if(algorithm=="Adadelta"||algorithm=="adadelta"||algorithm=="AdaDelta"||algorithm=="AdaD"||algorithm=="adad"||algorithm=="ADAD")
-	{
-		fullname="AdaDelta optimizer";
-		Trainer *trainer=NULL;
-		if(params.size()==1)
-			trainer = new AdadeltaTrainer(pc,params[0]);
-		else
-			trainer = new AdadeltaTrainer(pc,params[0],params[1]);
-		return trainer;
-	}
-	if(algorithm=="RMSProp"||algorithm=="rmsprop"||algorithm=="rmsp"||algorithm=="RMSP")
-	{
-		fullname="RMSProp optimizer";
-		Trainer *trainer=NULL;
-		if(params.size()==1)
-			trainer = new RMSPropTrainer(pc,params[0]);
-		else if(params.size()==2)
-			trainer = new RMSPropTrainer(pc,params[0],params[1]);
-		else
-			trainer = new RMSPropTrainer(pc,params[0],params[1],params[2]);
-		return trainer;
-	}
-	if(algorithm=="Adam"||algorithm=="adam"||algorithm=="ADAM")
-	{
-		fullname="Adam optimizer";
-		Trainer *trainer=NULL;
-		if(params.size()==1)
-			trainer = new AdamTrainer(pc,params[0]);
-		else if(params.size()==2)
-			trainer = new AdamTrainer(pc,params[0],params[1]);
-		else if(params.size()==3)
-			trainer = new AdamTrainer(pc,params[0],params[1],params[2]);
-		else
-			trainer = new AdamTrainer(pc,params[0],params[1],params[2],params[3]);
-		return trainer;
-	}
-	if(algorithm=="AMSGrad"||algorithm=="Amsgrad"||algorithm=="Amsg"||algorithm=="amsg")
-	{
-		fullname="AMSGrad optimizer";
-		Trainer *trainer=NULL;
-		if(params.size()==1)
-			trainer = new AmsgradTrainer(pc,params[0]);
-		else if(params.size()==2)
-			trainer = new AmsgradTrainer(pc,params[0],params[1]);
-		else if(params.size()==3)
-			trainer = new AmsgradTrainer(pc,params[0],params[1],params[2]);
-		else
-			trainer = new AmsgradTrainer(pc,params[0],params[1],params[2],params[3]);
-		return trainer;
-	}
-	return NULL;
-}
 
 template<class T>
 bool Opt_TALOS::parseVectorAuto(const std::string& keyword, std::vector<T>& values, unsigned num)
