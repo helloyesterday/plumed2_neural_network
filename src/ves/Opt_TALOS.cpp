@@ -29,6 +29,7 @@
 #include "core/ActionRegister.h"
 #include "core/PlumedMain.h"
 #include "core/Atoms.h"
+#include "tools/File.h"
 #include "tools/DynetTools.h"
 
 namespace PLMD {
@@ -60,6 +61,7 @@ class Opt_TALOS :
 private:
 	bool is_debug;
 	bool opt_const;
+	bool read_targetdis;
 	
 	unsigned random_seed;
 	
@@ -86,6 +88,8 @@ private:
 	float clip_left;
 	float clip_right;
 	
+	std::vector<std::string> arg_names;
+	
 	std::vector<unsigned> basises_nums;
 	std::vector<unsigned> const_id;
 
@@ -100,13 +104,16 @@ private:
 	std::vector<float> input_bias;
 	
 	std::vector<dynet::real> input_target;
-	std::vector<dynet::real> p_target;
+	std::vector<dynet::real> target_dis;
 	std::vector<dynet::real> basis_values;
 	
 	std::string algorithm_bias;
 	std::string algorithm_wgan;
 	
+	std::string targetdis_file;
 	std::string debug_file;
+	
+	IFile itarget;
 	OFile odebug;
 	
 	std::vector<float> lr_bias;
@@ -137,6 +144,8 @@ public:
 	void coeffsUpdate(const unsigned int c_id = 0){}
 	template<class T>
 	bool parseVectorAuto(const std::string&, std::vector<T>&,unsigned);
+	template<class T>
+	bool parseVectorAuto(const std::string&, std::vector<T>&,unsigned,const T&);
 };
 
 PLUMED_REGISTER_ACTION(Opt_TALOS,"OPT_TALOS")
@@ -157,7 +166,6 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   //~ keys.add("compulsory","ARG","the arguments used to set the target distribution");
   keys.remove("STRIDE");
   keys.remove("STEPSIZE");
-  keys.add("compulsory","ARG_PERIODIC","NO","if the arguments are periodic or not");
   keys.add("compulsory","ALGORITHM_BIAS","ADAM","the algorithm to train the neural network of bias function");
   keys.add("compulsory","ALGORITHM_WGAN","ADAM","the algorithm to train the W-GAN");
   keys.add("compulsory","UPDATE_STEPS","250","the number of step to update");
@@ -167,9 +175,11 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   keys.add("compulsory","HIDDEN_ACTIVE","RELU","active function of each hidden layer  for W-GAN");
   keys.add("compulsory","CLIP_LEFT","-0.01","the left value to clip");
   keys.add("compulsory","CLIP_RIGHT","0.01","the right value to clip");
-  keys.add("compulsory","GRID_MIN","the lower bounds used to calculate the target distribution");
-  keys.add("compulsory","GRID_MAX","the upper bounds used to calculate the target distribution");
-  keys.add("compulsory","GRID_BINS","the number of bins used to set the target distribution");
+  keys.add("optional","TARGETDIST_FILE","read target distribution from file");
+  keys.add("optional","GRID_MIN","the lower bounds used to calculate the target distribution");
+  keys.add("optional","GRID_MAX","the upper bounds used to calculate the target distribution");
+  keys.add("optional","GRID_BINS","the number of bins used to set the target distribution");
+  keys.add("optional","ARG_PERIODIC","if the arguments are periodic or not");
   keys.addFlag("OPTIMIZE_CONSTANT_PARAMETER",false,"also to optimize the constant part of the basis functions");
   keys.add("optional","LEARN_RATE_BIAS","the learning rate for training the neural network of bias function");
   keys.add("optional","LEARN_RATE_WGAN","the learning rate for training the W-GAN");
@@ -179,10 +189,6 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   keys.add("optional","CLIP_THRESHOLD_WGAN","the clip threshold for training the W-GAn");
   keys.add("optional","SIM_TEMP","the simulation temperature");
   keys.add("optional","DEBUG_FILE","the file to debug");
-  keys.add("hidden","COMBINED_GRADIENT_FILE","the name of output file for the combined gradient (gradient + Hessian term)");
-  keys.add("hidden","COMBINED_GRADIENT_OUTPUT","how often the combined gradient should be written to file. This parameter is given as the number of bias iterations. It is by default 100 if COMBINED_GRADIENT_FILE is specficed");
-  keys.add("hidden","COMBINED_GRADIENT_FMT","specify format for combined gradient file(s) (useful for decrease the number of digits in regtests)");
-  keys.add("optional","EXP_DECAYING_AVER","calculate the averaged coefficients using exponentially decaying averaging using the decaying constant given here in the number of iterations");
 }
 
 
@@ -198,6 +204,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
   PLUMED_VES_OPTIMIZER_INIT(ao),
   ActionWithArguments(ao),
   is_debug(false),
+  read_targetdis(false),
   random_seed(0),
   narg(getNumberOfArguments()),
   step(0),
@@ -250,6 +257,12 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		params.random_seed=random_seed;
 		if(comm.Get_rank()!=0)
 			dynet::initialize(params);
+	}
+	
+	for(unsigned i=0;i!=narg;++i)
+	{
+		arg_names.push_back(getPntrToArgument(i)->getName());
+		//~ log.printf("  %d with argument names: %s\n",int(i),arg_names[i].c_str());
 	}
 	
 	setStride(1);
@@ -343,29 +356,46 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	
 	init_coe.resize(tot_basis);
 	
+	std::vector<float> params_wgan(nn_wgan.parameters_number());
+	
 	if(useMultipleWalkers())
 	{
 		if(multi_sim_comm.Get_rank()==0)
 		{
 			if(comm.Get_rank()==0)
+			{
 				init_coe=as_vector(*parm_bias.values());
+				params_wgan=nn_wgan.get_parameters();
+			}
 			comm.Barrier();
 			comm.Bcast(init_coe,0);
+			comm.Bcast(params_wgan,0);
 		}
 		multi_sim_comm.Barrier();
 		multi_sim_comm.Bcast(init_coe,0);
+		multi_sim_comm.Bcast(params_wgan,0);
 	}
-	else if(comm.Get_rank()==0)
-		init_coe=as_vector(*parm_bias.values());
-	comm.Barrier();
-	comm.Bcast(init_coe,0);
+	else
+	{
+		if(comm.Get_rank()==0)
+		{
+			init_coe=as_vector(*parm_bias.values());
+			params_wgan=nn_wgan.get_parameters();
+		}
+		comm.Barrier();
+		comm.Bcast(init_coe,0);
+		comm.Bcast(params_wgan,0);
+	}
+	
+	parm_bias.set_value(init_coe);
+	nn_wgan.set_parameters(params_wgan);
 
 	unsigned id=0;
 	for(unsigned i=0;i!=nbiases;++i)
 	{
 		std::vector<double> coe(basises_nums[i]);
 		for(unsigned j=0;j!=basises_nums[i];++j)
-		{		
+		{
 			if(j==0&&(!opt_const))
 				coe[j]=0;
 			else
@@ -395,60 +425,132 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		odebug.open(debug_file);
 		odebug.addConstantField("ITERATION");
 	}
-
-	std::vector<std::string> arg_perd_str;
-	parseVectorAuto("ARG_PERIODIC",arg_perd_str,narg);
-	for(unsigned i=0;i!=narg;++i)
-	{
-		if(arg_perd_str[i]=="Yes"||arg_perd_str[i]=="yes"||arg_perd_str[i]=="YES")
-			args_periodic[i]=true;
-		else if(arg_perd_str[i]=="No"||arg_perd_str[i]=="no"||arg_perd_str[i]=="NO")
-			args_periodic[i]=false;
-		else
-			plumed_merror("Cannot understand the ARG_PERIODIC type: "+arg_perd_str[i]);
-	}
 	
 	parse("EPOCH_NUM",nepoch);
 	plumed_massert(nepoch>0,"EPOCH_NUM must be larger than 0!");
 	batch_size=update_steps/nepoch;
 	plumed_massert((update_steps-batch_size*nepoch)==0,"UPDATE_STEPS must be divided exactly by EPOCH_NUM");
 	
-	parseVectorAuto("GRID_MIN",grid_min,narg);
-	parseVectorAuto("GRID_MAX",grid_max,narg);
-	parseVectorAuto("GRID_BINS",grid_bins,narg);
-
+	parse("TARGETDIST_FILE",targetdis_file);
+	if(targetdis_file.size()>0)
+		read_targetdis=true;
+	
+	std::vector<std::string> arg_perd_str;
 	ntarget=1;
+	if(read_targetdis)
+	{
+		itarget.link(*this);
+		itarget.open(targetdis_file.c_str());
+		itarget.allowIgnoredFields();
+		
+		for(unsigned i=0;i!=narg;++i)
+		{
+			if(!itarget.FieldExist(arg_names[i]))
+				plumed_merror("Cannot found Field \""+arg_names[i]+"\"");
+			if(!itarget.FieldExist("targetdist"))
+				plumed_merror("Cannot found Field \"targetdist\"");
+
+			double fvv=0;
+			if(itarget.FieldExist("min_"+arg_names[i]))
+				itarget.scanField("min_"+arg_names[i],fvv);
+			grid_min.push_back(fvv);
+			
+			if(itarget.FieldExist("max_"+arg_names[i]))
+				itarget.scanField("max_"+arg_names[i],fvv);
+			grid_max.push_back(fvv);
+			
+			int bin=0;
+			if(itarget.FieldExist("nbins_"+arg_names[i]))
+				itarget.scanField("nbins_"+arg_names[i],bin);
+			else
+				plumed_merror("Cannot found Field \"nbins_"+arg_names[i]+"\"");
+			grid_bins.push_back(bin);
+			ntarget*=bin;
+			
+			std::string ip="false";
+			if(itarget.FieldExist("periodic_"+arg_names[i]))
+				itarget.scanField("periodic_"+arg_names[i],ip);
+			arg_perd_str.push_back(ip);
+		}
+	}
+	else
+	{
+		parseVectorAuto("GRID_MIN",grid_min,narg);
+		parseVectorAuto("GRID_MAX",grid_max,narg);
+		parseVectorAuto("GRID_BINS",grid_bins,narg);
+		parseVectorAuto("ARG_PERIODIC",arg_perd_str,narg,std::string("false"));
+		
+		for(unsigned i=0;i!=narg;++i)
+		{
+			grid_space[i]=(grid_max[i]-grid_min[i])/grid_bins[i];
+			if(!args_periodic[i])
+				++grid_bins[i];
+			ntarget*=grid_bins[i];
+		}
+	}
+	comm.Barrier();
+	
 	for(unsigned i=0;i!=narg;++i)
 	{
-		grid_space[i]=(grid_max[i]-grid_min[i])/grid_bins[i];
-		if(!args_periodic[i])
-			++grid_bins[i];
-		ntarget*=grid_bins[i];
+		if(arg_perd_str[i]=="True"||arg_perd_str[i]=="true"||arg_perd_str[i]=="TRUE")
+			args_periodic[i]=true;
+		else if(arg_perd_str[i]=="False"||arg_perd_str[i]=="false"||arg_perd_str[i]=="FALSE")
+			args_periodic[i]=false;
+		else
+			plumed_merror("Cannot understand the ARG_PERIODIC type: "+arg_perd_str[i]);
 	}
 	
 	std::vector<std::vector<float>> target_points;
-	std::vector<unsigned> argid(narg,0);
-	float p0=1.0/ntarget;
-	for(unsigned i=0;i!=ntarget;++i)
+	if(read_targetdis)
 	{
-		std::vector<float> vtt;
-		for(unsigned j=0;j!=narg;++j)
+		double sum=0;
+		for(unsigned i=0;i!=ntarget;++i)
 		{
-			float tt=grid_min[j]+grid_space[j]*argid[j];
-			if(args_periodic[j])
-				tt+=grid_space[j]/2.0;
-			vtt.push_back(tt);
-			input_target.push_back(tt);
-			if(j==0)
-				++argid[j];
-			else if(argid[j-1]==grid_bins[j-1])
+			std::vector<float> vtt;
+			for(unsigned j=0;j!=narg;++j)
 			{
-				++argid[j];
-				argid[j-1]%=grid_bins[j-1];
+				double tt;
+				itarget.scanField(arg_names[j],tt);
+				vtt.push_back(tt);
+				input_target.push_back(tt);
 			}
+			double p0;
+			itarget.scanField("targetdist",p0);
+			itarget.scanField();
+			
+			sum+=p0;
+			target_dis.push_back(p0);
+			target_points.push_back(vtt);
 		}
-		target_points.push_back(vtt);
-		p_target.push_back(p0);
+		itarget.close();
+		comm.Barrier();
+		for(unsigned i=0;i!=ntarget;++i)
+			target_dis[i]/=(sum/ntarget);
+	}
+	else
+	{
+		target_dis.assign(ntarget,1.0);
+		std::vector<unsigned> argid(narg,0);
+		for(unsigned i=0;i!=ntarget;++i)
+		{
+			std::vector<float> vtt;
+			for(unsigned j=0;j!=narg;++j)
+			{
+				float tt=grid_min[j]+grid_space[j]*argid[j];
+				if(args_periodic[j])
+					tt+=grid_space[j]/2.0;
+				vtt.push_back(tt);
+				input_target.push_back(tt);
+				if(j==0)
+					++argid[j];
+				else if(argid[j-1]==grid_bins[j-1])
+				{
+					++argid[j];
+					argid[j-1]%=grid_bins[j-1];
+				}
+			}
+			target_points.push_back(vtt);
+		}
 	}
 	
 	if(useMultipleWalkers())
@@ -480,18 +582,24 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	for(unsigned i=0;i!=grid_bins.size();++i)
 		log.printf(" %d",grid_bins[i]);
 	log.printf("\n");
-	if(is_debug)
+	if(read_targetdis)
 	{
-		log.printf("  with target distribution:\n");
+		log.printf("  with target distribution read from file: %s\n",targetdis_file.c_str());
 		for(unsigned i=0;i!=ntarget;++i)
 		{
 			log.printf("    target %d:",int(i));
 			for(unsigned j=0;j!=narg;++j)
 				log.printf(" %f,",target_points[i][j]);
-			log.printf(" with %f\n",p_target[i]);
+			log.printf(" with %f\n",target_dis[i]);
 		}
-		log.printf("  with total target segments: %d\n",int(ntarget));
 	}
+	else
+	{
+		log.printf("  with uniform target distribution\n");
+		for(unsigned i=0;i!=narg;++i)
+		log.printf("    %d Argument %s: from %f to %f with %d bins\n",int(i),arg_names[i].c_str(),grid_min[i],grid_max[i],int(grid_bins[i]));
+	}
+	log.printf("  with total target segments: %d\n",int(ntarget));
 	
 	log.printf("  with simulation temperature: %f\n",sim_temp);
 	log.printf("  with boltzmann constant: %f\n",kB);
@@ -664,6 +772,7 @@ void Opt_TALOS::update()
 		double bloss=0;
 		std::vector<float> new_coe(tot_basis,0);
 		std::vector<std::vector<float>> vec_fw;
+		std::vector<float> params_wgan(nn_wgan.parameters_number(),0);
 		if(useMultipleWalkers())
 		{
 			multi_sim_comm.Sum(counts);
@@ -690,16 +799,19 @@ void Opt_TALOS::update()
 					bloss=update_bias(all_input_bias,vec_fw);
 					vec_fw.resize(0);
 					new_coe=as_vector(*parm_bias.values());
+					params_wgan=nn_wgan.get_parameters();
 				}
 				comm.Barrier();
 				comm.Bcast(wloss,0);
 				comm.Bcast(bloss,0);
 				comm.Bcast(new_coe,0);
+				comm.Bcast(params_wgan,0);
 			}
 			multi_sim_comm.Barrier();
 			multi_sim_comm.Bcast(wloss,0);
 			multi_sim_comm.Bcast(bloss,0);
 			multi_sim_comm.Bcast(new_coe,0);
+			multi_sim_comm.Bcast(params_wgan,0);
 		}
 		else
 		{
@@ -709,12 +821,17 @@ void Opt_TALOS::update()
 				bloss=update_bias(input_bias,vec_fw);
 				vec_fw.resize(0);
 				new_coe=as_vector(*parm_bias.values());
+				params_wgan=nn_wgan.get_parameters();
 			}
 		}
 		comm.Barrier();
 		comm.Bcast(wloss,0);
 		comm.Bcast(bloss,0);
 		comm.Bcast(new_coe,0);
+		comm.Bcast(params_wgan,0);
+		
+		parm_bias.set_value(new_coe);
+		nn_wgan.set_parameters(params_wgan);
 
 		valueLwgan->set(wloss);
 		valueLbias->set(bloss);
@@ -797,6 +914,7 @@ float Opt_TALOS::update_wgan(const std::vector<float>& all_input_arg,std::vector
 	ComputationGraph cg;
 	Dim xs_dim({narg},batch_size);
 	Dim xt_dim({narg},ntarget);
+	Dim pt_dim({1},ntarget);
 	
 	//~ std::random_shuffle(input_target.begin(), input_target.end());
 
@@ -804,12 +922,15 @@ float Opt_TALOS::update_wgan(const std::vector<float>& all_input_arg,std::vector
 	std::vector<float> input_sample(wsize);
 	Expression x_sample=input(cg,xs_dim,&input_sample);
 	Expression x_target=input(cg,xt_dim,&input_target);
+	Expression p_target=input(cg,pt_dim,&target_dis);
 
 	Expression y_sample=nn_wgan.run(x_sample,cg);
 	Expression y_target=nn_wgan.run(x_target,cg);
+	
+	Expression l_target=y_target*p_target;
 
 	Expression loss_sample=mean_batches(y_sample);
-	Expression loss_target=mean_batches(y_target);
+	Expression loss_target=mean_batches(l_target);
 
 	Expression loss_wgan=loss_sample-loss_target;
 	
@@ -882,6 +1003,31 @@ bool Opt_TALOS::parseVectorAuto(const std::string& keyword, std::vector<T>& valu
 	if(values.size()!=num)
 	{
 		if(values.size()==1)
+		{
+			for(unsigned i=1;i!=num;++i)
+				values.push_back(values[0]);
+		}
+		else
+			plumed_merror("The number of "+keyword+" must be equal to the number of arguments!");
+	}
+	return true;
+}
+
+template<class T>
+bool Opt_TALOS::parseVectorAuto(const std::string& keyword, std::vector<T>& values, unsigned num,const T& def_value)
+{
+	plumed_massert(num>0,"the adjust number must be larger than 0!");
+	values.resize(0);
+	parseVector(keyword,values);
+	
+	if(values.size()!=num)
+	{
+		if(values.size()==0)
+		{
+			for(unsigned i=0;i!=num;++i)
+				values.push_back(def_value);
+		}
+		else if(values.size()==1)
 		{
 			for(unsigned i=1;i!=num;++i)
 				values.push_back(values[0]);
