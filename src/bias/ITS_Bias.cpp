@@ -97,8 +97,8 @@ ITS_BIAS ...
   PESHIFT=1500
   FB_FILE=fb.data
   FB_STRIDE=100
-  FBTRJ_FILE=fbtrj.data
-  FBTRJ_STRIDE=20
+  FBTRAJ_FILE=fbtrj.data
+  FBTRAJ_STRIDE=20
 ... ITS_BIAS
 \endverbatim
 
@@ -121,8 +121,8 @@ ITS_BIAS ...
   PESHIFT=1500
   FB_FILE=fb.data
   FB_STRIDE=100
-  FBTRJ_FILE=fbtrj.data
-  FBTRJ_STRIDE=20
+  FBTRAJ_FILE=fbtrj.data
+  FBTRAJ_STRIDE=20
 ... ITS_BIAS
 \endverbatim
 
@@ -2090,12 +2090,15 @@ float ITS_Bias::update_wgan(const std::vector<float>& all_input_arg,std::vector<
 	std::vector<float> input_sample(wsize);
 	Expression x_sample=input(cg,xs_dim,&input_sample);
 	Expression x_target=input(cg,xt_dim,&input_target);
+	Expression p_target=input(cg,pt_dim,&target_dis);
 
 	Expression y_sample=nn_wgan.run(x_sample,cg);
 	Expression y_target=nn_wgan.run(x_target,cg);
+	
+	Expression l_target=y_target*p_target;
 
 	Expression loss_sample=mean_batches(y_sample);
-	Expression loss_target=mean_batches(y_target);
+	Expression loss_target=mean_batches(l_target);
 
 	Expression loss_wgan=loss_sample-loss_target;
 	
