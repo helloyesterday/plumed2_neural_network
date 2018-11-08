@@ -90,6 +90,7 @@ struct MLP {
 protected:
   // Hyper-parameters
   unsigned LAYERS = 0;
+  unsigned params_num = 0;
   unsigned input_dim; /**< Input dimension */
   unsigned output_dim; /**< Output dimension */
 
@@ -97,6 +98,7 @@ protected:
   std::vector<Layer> layers;
   // Parameters
   std::vector<std::vector<Parameter>> params;
+  std::vector<std::vector<unsigned>> params_size;
 
   bool dropout_active = true;
 
@@ -106,6 +108,8 @@ public:
   unsigned get_input_dim() const {return output_dim;}
   void clip(float left,float right,bool clip_last_layer=false);
   void clip_inplace(float left,float right,bool clip_last_layer=false);
+  
+  unsigned parameters_number() const {return params_num;}
   
    /**
    * \brief Default constructor
@@ -199,8 +203,8 @@ public:
     return dropout_active;
   }
   
-  void MLP::set_parameters(const std::vector<std::vector<std::vector<float>>>&)
-  void MLP::set_parameters(const std::vector<std::vector<float>>&,unsigned)
+  void set_parameters(const std::vector<float>&);
+  std::vector<float> get_parameters();
 
 private:
   inline Expression activate(Expression h, Activation f);

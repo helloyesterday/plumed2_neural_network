@@ -78,6 +78,11 @@ void MLP::append(ParameterCollection& model, Layer layer)
     Parameter W = model.add_parameters({layer.output_dim, layer.input_dim});
     Parameter b = model.add_parameters({layer.output_dim});
     params.push_back({W, b});
+    unsigned nw = layer.output_dim * layer.input_dim;
+    unsigned nb = layer.output_dim;
+    params_size.push_back({nw,nb});
+    params_num+=nw;
+    params_num+=nb;
 }
 
   /**
@@ -266,56 +271,38 @@ void MLP::clip_inplace(float left,float right,bool clip_last_layer)
 	}
 }
 
-std::vector<std::vector<std::vector<float>>> MLP::get_parameters()
+std::vector<float> MLP::get_parameters()
 {
-	std::vector<std::vector<std::vector<float>>> values;
+	std::vector<float> param_values;
 	for(unsigned i=0;i!=params.size();++i)
 	{
-		std::vector<std::vector<float>> vv;
 		for(unsigned j=0;j!=params[i].size();++j)
-			vv.push_back(as_vector(*params[i][j].value()));
-	}
-	values.push_back(vv);
-	return values;
-}
-
-std::vector<std::vector<float>> MLP::get_parameters(unsigned layer_id)
-{
-	std::vector<std::vector<float>> values;
-	for(unsigned j=0;j!=params[layer_id].size();++j)
-		values.push_back(as_vector(*params[layer_id][j].value()));
-
-	return values;
-}
-
-void MLP::set_parameters(const std::vector<std::vector<std::vector<float>>>& new_params)
-{
-	if(new_params.size()!=params.size())
-	{
-		std::cerr<<"ERROR! The number of layers of the input parameters mismatch!"::std::endl;
-		exit(-1);
-	}
-	for(unsigned i=0;i!=params.size();++i)
-	{
-		if(new_params[i].size()!=params[i].size())
 		{
-			std::cerr<<"ERROR! The size of the "<<i<<" layer of the input parameters mismatch!"::std::endl;
-			exit(-1);
+			std::vector<float> vv=as_vector(*params[i][j].values());
+			param_values.insert(param_values.end(),vv.begin(),vv.end());
 		}
-		for(unsigned j=0;j!=params[i].size();++j)
-			params[i][j].set_value(new_params[i][j]);
 	}
+	return param_values;
 }
 
-void MLP::set_parameters(const std::vector<std::vector<float>>& new_params,unsigned layer_id)
+void MLP::set_parameters(const std::vector<float>& param_values)
 {
-	if(new_params.size()!=params[layer_id].size())
+	if(param_values.size()<params_num)
 	{
-		std::cerr<<"ERROR! The size of the input parameters mismatch!"::std::endl;
+		std::cerr<<"ERROR! The number of the parameter overflow!"<<std::endl;
 		exit(-1);
 	}
-	for(unsigned j=0;j!=params[i].size();++j)
-		params[layer_id][j].set_value(new_params[j]);
+	unsigned ival=0;
+	for(unsigned i=0;i!=params.size();++i)
+	{
+		for(unsigned j=0;j!=params[i].size();++j)
+		{
+			std::vector<float> new_params;
+			for(unsigned k=0;k!=params_size[i][j];++k)
+				new_params.push_back(param_values[ival++]);
+			params[i][j].set_value(new_params);
+		}
+	}
 }
 
 inline Expression MLP::activate(Expression h, Activation f)
