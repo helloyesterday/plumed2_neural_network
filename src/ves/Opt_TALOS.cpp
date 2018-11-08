@@ -22,6 +22,7 @@
 
 #ifdef __PLUMED_HAS_DYNET
 
+#include <random>
 #include "Optimizer.h"
 #include "CoeffsVector.h"
 #include "CoeffsMatrix.h"
@@ -223,41 +224,36 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	char** ivv=vv;
 	DynetParams params = extract_dynet_params(cc,ivv);
 	
+	random_seed=0;
 	if(useMultipleWalkers())
 	{
-		if(multi_sim_comm.Get_rank()==0)
+		if(comm.Get_rank()==0)
 		{
-			if(comm.Get_rank()==0)
+			if(multi_sim_comm.Get_rank()==0)
 			{
-				dynet::initialize(params);
-				random_seed=params.random_seed;
+				std::random_device rd;
+				random_seed=rd();
 			}
-			comm.Barrier();
-			comm.Bcast(random_seed,0);
-			params.random_seed=random_seed;
-			if(comm.Get_rank()!=0)
-				dynet::initialize(params);
+			multi_sim_comm.Barrier();
+			multi_sim_comm.Bcast(random_seed,0);
 		}
-		multi_sim_comm.Barrier();
-		multi_sim_comm.Bcast(random_seed,0);
+		comm.Barrier();
 		comm.Bcast(random_seed,0);
-		params.random_seed=random_seed;
-		if(multi_sim_comm.Get_rank()!=0)
-			dynet::initialize(params);
 	}
 	else
 	{
 		if(comm.Get_rank()==0)
 		{
-			dynet::initialize(params);
-			random_seed=params.random_seed;
+			std::random_device rd;
+			random_seed=rd();
 		}
 		comm.Barrier();
 		comm.Bcast(random_seed,0);
-		params.random_seed=random_seed;
-		if(comm.Get_rank()!=0)
-			dynet::initialize(params);
 	}
+
+	params.random_seed=random_seed;
+	
+	dynet::initialize(params);
 	
 	for(unsigned i=0;i!=narg;++i)
 	{
@@ -360,20 +356,19 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	
 	if(useMultipleWalkers())
 	{
-		if(multi_sim_comm.Get_rank()==0)
+		if(comm.Get_rank()==0)
 		{
-			if(comm.Get_rank()==0)
+			if(multi_sim_comm.Get_rank()==0)
 			{
 				init_coe=as_vector(*parm_bias.values());
 				params_wgan=nn_wgan.get_parameters();
 			}
-			comm.Barrier();
-			comm.Bcast(init_coe,0);
-			comm.Bcast(params_wgan,0);
+			multi_sim_comm.Barrier();
+			multi_sim_comm.Bcast(init_coe,0);
+			multi_sim_comm.Bcast(params_wgan,0);
 		}
-		multi_sim_comm.Barrier();
-		multi_sim_comm.Bcast(init_coe,0);
-		multi_sim_comm.Bcast(params_wgan,0);
+		comm.Bcast(init_coe,0);
+		comm.Bcast(params_wgan,0);
 	}
 	else
 	{
@@ -557,8 +552,8 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	{
 		if(comm.Get_rank()==0)
 			nw=multi_sim_comm.Get_size();
+		comm.Bcast(nw,0);
 		nepoch*=nw;
-		comm.Bcast(nepoch,0);
 	}
 	
 	addComponent("wloss"); componentIsNotPeriodic("wloss");
@@ -762,7 +757,6 @@ void Opt_TALOS::update()
 	
 	if(step%update_steps==0&&counts>0)
 	{
-		comm.Barrier();
 		if(input_arg.size()!=narg*update_steps)
 			plumed_merror("ERROR! The size of the input_arg mismatch: "+std::to_string(input_arg.size()));
 		if(input_bias.size()!=tot_basis*update_steps)
@@ -775,8 +769,10 @@ void Opt_TALOS::update()
 		std::vector<float> params_wgan(nn_wgan.parameters_number(),0);
 		if(useMultipleWalkers())
 		{
-			multi_sim_comm.Sum(counts);
-			
+			if(comm.Get_rank()==0)
+				multi_sim_comm.Sum(counts);
+			comm.Bcast(counts,0);
+
 			std::vector<float> all_input_arg;
 			std::vector<float> all_input_bias;
 			
@@ -790,10 +786,10 @@ void Opt_TALOS::update()
 			}
 			comm.Bcast(all_input_arg,0);
 			comm.Bcast(all_input_bias,0);
-			
-			if(multi_sim_comm.Get_rank()==0)
+
+			if(comm.Get_rank()==0)
 			{
-				if(comm.Get_rank()==0)
+				if(multi_sim_comm.Get_rank()==0)
 				{
 					wloss=update_wgan(all_input_arg,vec_fw);
 					bloss=update_bias(all_input_bias,vec_fw);
@@ -801,17 +797,17 @@ void Opt_TALOS::update()
 					new_coe=as_vector(*parm_bias.values());
 					params_wgan=nn_wgan.get_parameters();
 				}
-				comm.Barrier();
-				comm.Bcast(wloss,0);
-				comm.Bcast(bloss,0);
-				comm.Bcast(new_coe,0);
-				comm.Bcast(params_wgan,0);
+				multi_sim_comm.Barrier();
+				multi_sim_comm.Bcast(wloss,0);
+				multi_sim_comm.Bcast(bloss,0);
+				multi_sim_comm.Bcast(new_coe,0);
+				multi_sim_comm.Bcast(params_wgan,0);
 			}
-			multi_sim_comm.Barrier();
-			multi_sim_comm.Bcast(wloss,0);
-			multi_sim_comm.Bcast(bloss,0);
-			multi_sim_comm.Bcast(new_coe,0);
-			multi_sim_comm.Bcast(params_wgan,0);
+			comm.Barrier();
+			comm.Bcast(wloss,0);
+			comm.Bcast(bloss,0);
+			comm.Bcast(new_coe,0);
+			comm.Bcast(params_wgan,0);
 		}
 		else
 		{
@@ -823,12 +819,12 @@ void Opt_TALOS::update()
 				new_coe=as_vector(*parm_bias.values());
 				params_wgan=nn_wgan.get_parameters();
 			}
+			comm.Barrier();
+			comm.Bcast(wloss,0);
+			comm.Bcast(bloss,0);
+			comm.Bcast(new_coe,0);
+			comm.Bcast(params_wgan,0);
 		}
-		comm.Barrier();
-		comm.Bcast(wloss,0);
-		comm.Bcast(bloss,0);
-		comm.Bcast(new_coe,0);
-		comm.Bcast(params_wgan,0);
 		
 		parm_bias.set_value(new_coe);
 		nn_wgan.set_parameters(params_wgan);
