@@ -77,6 +77,7 @@ private:
 	unsigned update_steps;
 	unsigned nw;
 	unsigned iter_time;
+	unsigned wgan_output;
 	
 	double kB;
 	double kBT;
@@ -112,6 +113,7 @@ private:
 	std::string algorithm_wgan;
 	
 	std::string targetdis_file;
+	std::string wgan_file;
 	std::string debug_file;
 	
 	IFile itarget;
@@ -176,6 +178,8 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   keys.add("compulsory","HIDDEN_ACTIVE","RELU","active function of each hidden layer  for W-GAN");
   keys.add("compulsory","CLIP_LEFT","-0.01","the left value to clip");
   keys.add("compulsory","CLIP_RIGHT","0.01","the right value to clip");
+  keys.add("compulsory","WGAN_FILE","wgan.data","file name of the coefficients of W-GAN");
+  keys.add("compulsory","WGAN_OUTPUT","1","the frequency (how many period of update) to out the coefficients of W-GAN");
   keys.add("optional","TARGETDIST_FILE","read target distribution from file");
   keys.add("optional","GRID_MIN","the lower bounds used to calculate the target distribution");
   keys.add("optional","GRID_MAX","the upper bounds used to calculate the target distribution");
@@ -218,12 +222,6 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
   train_wgan(NULL),
   nn_wgan(pc_wgan)
 {
-	int cc=1;
-	char pp[]="plumed";
-	char *vv[]={pp};
-	char** ivv=vv;
-	DynetParams params = extract_dynet_params(cc,ivv);
-	
 	random_seed=0;
 	if(useMultipleWalkers())
 	{
@@ -250,6 +248,12 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		comm.Barrier();
 		comm.Bcast(random_seed,0);
 	}
+	
+	int cc=1;
+	char pp[]="plumed";
+	char *vv[]={pp};
+	char** ivv=vv;
+	DynetParams params = extract_dynet_params(cc,ivv,true);
 
 	params.random_seed=random_seed;
 	
@@ -284,6 +288,9 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	
 	parse("CLIP_LEFT",clip_left);
 	parse("CLIP_RIGHT",clip_right);
+	
+	parse("WGAN_FILE",wgan_file);
+	parse("WGAN_OUTPUT",wgan_output);
 	
 	parseFlag("OPTIMIZE_CONSTANT_PARAMETER",opt_const);
 	
@@ -835,6 +842,12 @@ void Opt_TALOS::update()
 		input_arg.resize(0);
 		input_bias.resize(0);
 		counts=0;
+		
+		if(comm.Get_rank()==0&&multi_sim_comm.Get_rank()==0&&iter_time%wgan_output==0)
+		{
+			TextFileSaver saver(wgan_file);
+			saver.save(pc_wgan);
+		}
 		
 		++iter_time;
 		
