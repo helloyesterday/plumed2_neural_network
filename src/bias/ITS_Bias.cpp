@@ -136,9 +136,9 @@ void ITS_Bias::registerKeywords(Keywords& keys)
 	Bias::registerKeywords(keys);
 	keys.addOutputComponent("rbias","default","the revised bias potential using rct");
 	keys.addOutputComponent("rct","default","the reweighting revise factor");
-	keys.addOutputComponent("force","default","the instantaneous value of the bias force");
-	keys.addOutputComponent("potential","default","the instantaneous value of the potential energy of the system");
-	keys.addOutputComponent("effective","DEBUG_FILE","the instantaneous value of the effective potential");
+	keys.addOutputComponent("energy","default","the instantaneous value of the potential energy of the system");
+	keys.addOutputComponent("eff_ener","default","the instantaneous value of the effective potential");
+	keys.addOutputComponent("eff_temp","default","the instantaneous value of the bias force");
 	//~ keys.addOutputComponent("rbias_T","RW_TEMP","the revised bias potential at different temperatures");
 	keys.addOutputComponent("rwfb","DEBUG_FILE","the revised bias potential using rct");
 	ActionWithValue::useCustomisableComponents(keys);
@@ -163,12 +163,27 @@ void ITS_Bias::registerKeywords(Keywords& keys)
 	keys.addFlag("FB_FIXED",false,"to fix the fb value without update");
 	keys.addFlag("MULTIPLE_WALKERS",false,"use multiple walkers");
 	keys.addFlag("VARIATIONAL",false,"use variational approach to iterate the fb value");
-	keys.addFlag("ONLY_FIRST_ORDER",false,"only to calculate the first order of Omega (gradient) in variational approach");
+	//~ keys.addFlag("ONLY_FIRST_ORDER",false,"only to calculate the first order of Omega (gradient) in variational approach");
 	keys.addFlag("TEMP_CONTRIBUTE",false,"use the contribution of each temperatue to calculate the derivatives instead of the target distribution");
 	keys.addFlag("PESHIFT_AUTO_ADJUST",false,"automatically adjust the PESHIFT value during the fb iteration");
 	keys.addFlag("UNLINEAR_REPLICAS",false,"to setup the segments of temperature be propotional to the temperatues. If you setup the REPLICA_RATIO_MIN value, this term will be automatically opened.");
 	keys.addFlag("DIRECT_AVERAGE",false,"to directly calculate the average of rbfb value in each step (only be used in traditional iteration process)");
 	keys.addFlag("NOT_USE_BIAS_RCT",false,"do not use the c(t) of bias to modify the bias energy when using bias as the input CVs");
+	
+#ifdef __PLUMED_HAS_DYNET
+	keys.addFlag("USE_TALITS",false,"use targeted adversarial learning ITS");
+	keys.add("optional","ALGORITHM_BIAS","the algorithm to train the neural network of bias function");
+	keys.add("optional","ALGORITHM_WGAN","the algorithm to train the W-GAN");
+	keys.add("optional","UPDATE_STEPS","the number of step to update");
+	keys.add("optional","EPOCH_NUM","number of epoch for each update per walker");
+	keys.add("optional","HIDDEN_NUMBER","the number of hidden layers for W-GAN");
+	keys.add("optional","HIDDEN_LAYER","the dimensions of each hidden layer  for W-GAN");
+	keys.add("optional","HIDDEN_ACTIVE","active function of each hidden layer  for W-GAN");
+	keys.add("optional","CLIP_LEFT","the left value to clip");
+	keys.add("optional","CLIP_RIGHT","the right value to clip");
+	keys.add("optional","WGAN_FILE","file name of the coefficients of W-GAN");
+	keys.add("optional","WGAN_OUTPUT","the frequency (how many period of update) to out the coefficients of W-GAN");
+#endif
 
 	keys.add("optional","START_CYCLE","the start step for fb updating");
 	keys.add("optional","FB_INIT","( default=0.0 ) the default value for fb initializing");
@@ -213,6 +228,13 @@ void ITS_Bias::registerKeywords(Keywords& keys)
 
 ITS_Bias::~ITS_Bias()
 {
+#ifdef __PLUMED_HAS_DYNET
+	if(use_talits)
+	{
+		delete train_wgan;
+		delete train_bias;
+	}
+#endif
 	if(!equiv_temp&&!is_const)
 	{
 		ofb.close();
@@ -221,8 +243,7 @@ ITS_Bias::~ITS_Bias()
 			orct.close();
 		//~ onormtrj.close();
 		//~ opstrj.close();
-		//~ if(is_ves)
-			//~ oderiv.close();
+
 	}
 	if(is_debug)
 		odebug.close();
@@ -236,15 +257,18 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 	PLUMED_BIAS_INIT(ao),update_start(0),ratio_energy(0),rct(0),
 	step(0),norm_step(0),mcycle(0),iter_limit(0),
 	fb_init(0.0),fb_bias(0.0),rb_fac1(0.5),rb_fac2(0.0),step_size(1.0),
-	is_const(false),rw_output(false),is_ves(false),
-	read_norm(false),only_1st(false),bias_output(false),
+	is_const(false),rw_output(false),
+	read_norm(false),bias_output(false),
 	rbfb_output(false),is_debug(false),potdis_output(false),
 	bias_linked(false),only_bias(false),is_read_ratio(false),
 	is_set_temps(false),is_set_ratios(false),is_norm_rescale(false),
 	read_fb(false),read_iter(false),fbtrj_output(false),rct_output(false),
 	partition_initial(false),
 	start_cycle(0),fb_stride(1),bias_stride(1),potdis_step(1),rctid(0),
-	min_ener(1e38),pot_bin(1),dU(1),dvp2_complete(0)
+	min_ener(1e38),pot_bin(1),dU(1)
+#ifdef __PLUMED_HAS_DYNET
+	,train_bias(NULL),train_wgan(NULL),nn_wgan(pc_wgan)
+#endif
 {
 	if(getNumberOfArguments()==0)
 		only_bias=true;
@@ -278,11 +302,175 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 
 	kB=plumed.getAtoms().getKBoltzmann();
 
-	parseFlag("VARIATIONAL",is_ves);
 	parseFlag("FB_FIXED",is_const);
 	parseFlag("EQUIVALENT_TEMPERATURE",equiv_temp);
 	parseFlag("MULTIPLE_WALKERS",use_mw);
-	parseFlag("ONLY_FIRST_ORDER",only_1st);
+#ifdef __PLUMED_HAS_DYNET
+	parseFlag("USE_TALITS",use_talits);
+	std::vector<float> other_params_bias,other_params_wgan;
+	std::vector<unsigned> hidden_layers;
+	std::vector<std::string> hidden_active;
+	std::string fullname_bias,fullname_wgan;
+	if(use_talits&&!is_const&&!equiv_temp)
+	{
+		random_seed=0;
+		if(use_mw)
+		{
+			if(comm.Get_rank()==0)
+			{
+				if(multi_sim_comm.Get_rank()==0)
+				{
+					std::random_device rd;
+					random_seed=rd();
+				}
+				multi_sim_comm.Barrier();
+				multi_sim_comm.Bcast(random_seed,0);
+			}
+			comm.Barrier();
+			comm.Bcast(random_seed,0);
+		}
+		else
+		{
+			if(comm.Get_rank()==0)
+			{
+				std::random_device rd;
+				random_seed=rd();
+			}
+			comm.Barrier();
+			comm.Bcast(random_seed,0);
+		}
+		
+		int cc=1;
+		char pp[]="plumed";
+		char *vv[]={pp};
+		char** ivv=vv;
+		DynetParams params = extract_dynet_params(cc,ivv,true);
+
+		params.random_seed=random_seed;
+		
+		dynet::initialize(params);
+		
+		algorithm_bias="ADAM";
+		parse("ALGORITHM_BIAS",algorithm_bias);
+		algorithm_wgan="ADAM";
+		parse("ALGORITHM_WGAN",algorithm_wgan);
+		
+		parseVector("LEARN_RATE_BIAS",lr_bias);
+		parseVector("LEARN_RATE_WGAN",lr_wgan);
+		
+		
+		parseVector("HYPER_PARAMS_BIAS",other_params_bias);
+		parseVector("HYPER_PARAMS_BIAS",other_params_wgan);
+		
+		unsigned nhidden=3;
+		parse("HIDDEN_NUMBER",nhidden);
+	
+		parseVector("HIDDEN_LAYER",hidden_layers);
+		if(hidden_layers.size()!=nhidden)
+		{
+			if(hidden_layers.size()==0)
+				hidden_layers.assign(nhidden,8);
+			else if(hidden_layers.size()==1)
+			{
+				unsigned hl0=hidden_layers[0]
+				hidden_layers.assign(nhidden,hl);
+			}
+			else
+				plumed_merror("The number of HIDDEN_LAYER must be equal to HIDDEN_NUMBER!")
+		}
+		
+		parseVector("HIDDEN_ACTIVE",hidden_active);
+		if(hidden_active.size()!=nhidden)
+		{
+			if(hidden_active.size()==0)
+				hidden_active.assign(nhidden,"RELU");
+			else if(hidden_active.size()==1)
+			{
+				std::string ha0=hidden_active[0];
+				hidden_active.assign(nhidden,ha0);
+			}
+			else
+				plumed_merror("The number of HIDDEN_ACTIVE must be equal to HIDDEN_NUMBER!")
+		}
+		
+		clip_left=-0.01;
+		parse("CLIP_LEFT",clip_left);
+		clip_right=0.01;
+		parse("CLIP_RIGHT",clip_right);
+		
+		//~ parse("WGAN_FILE",wgan_file);
+		//~ parse("WGAN_OUTPUT",wgan_output);
+		
+		if(lr_bias.size()==0)
+			train_bias=new_traniner(algorithm_bias,pc_bias,fullname_bias);
+		else
+		{
+			if(algorithm_bias=="CyclicalSGD"||algorithm_bias=="cyclicalSGD"||algorithm_bias=="cyclicalsgd"||algorithm_bias=="CSGD"||algorithm_bias=="csgd")
+				plumed_massert(lr_bias.size()==2,"The CyclicalSGD algorithm need two learning rates");
+			else
+				plumed_massert(lr_bias.size()==1,"The "+algorithm_bias+" algorithm need only one learning rates");
+			hyper_params_bias.insert(hyper_params_bias.end(),lr_bias.begin(),lr_bias.end());
+			
+			if(other_params_bias.size()>0)
+				hyper_params_bias.insert(hyper_params_bias.end(),other_params_bias.begin(),other_params_bias.end());
+			train_bias=new_traniner(algorithm_bias,pc_bias,hyper_params_bias,fullname_bias);
+		}
+
+		if(lr_wgan.size()==0)
+			train_wgan=new_traniner(algorithm_wgan,pc_wgan,fullname_wgan);
+		else
+		{
+			if(algorithm_wgan=="CyclicalSGD"||algorithm_wgan=="cyclicalSGD"||algorithm_wgan=="cyclicalsgd"||algorithm_wgan=="CSGD"||algorithm_wgan=="csgd")
+				plumed_massert(lr_wgan.size()==2,"The CyclicalSGD algorithm need two learning rates");
+			else
+				plumed_massert(lr_wgan.size()==1,"The "+algorithm_wgan+" algorithm need only one learning rates");
+			hyper_params_wgan.insert(hyper_params_wgan.end(),lr_wgan.begin(),lr_wgan.end());
+			
+			if(other_params_wgan.size()>0)
+				hyper_params_wgan.insert(hyper_params_wgan.end(),other_params_wgan.begin(),other_params_wgan.end());
+			train_wgan=new_traniner(algorithm_wgan,pc_wgan,hyper_params_wgan,fullname_wgan);
+		}
+		
+		clip_threshold_bias=train_bias->clip_threshold;
+		clip_threshold_wgan=train_wgan->clip_threshold;
+		
+		parse("CLIP_THRESHOLD_BIAS",clip_threshold_bias);
+		parse("CLIP_THRESHOLD_WGAN",clip_threshold_wgan);
+		
+		train_bias->clip_threshold = clip_threshold_bias;
+		train_wgan->clip_threshold = clip_threshold_wgan;
+		
+		unsigned ldim=1;
+		for(unsigned i=0;i!=nhidden;++i)
+		{
+			nn_wgan.append(pc_wgan,Layer(ldim,hidden_layers[i],activation_function(hidden_active[i]),0));
+			ldim=hidden_layers[i];
+		}
+		nn_wgan.append(pc_wgan,Layer(ldim,1,LINEAR,0));
+		
+		std::vector<float> params_wgan(nn_wgan.parameters_number());
+		if(use_mw)
+		{
+			if(comm.Get_rank()==0)
+			{
+				if(multi_sim_comm.Get_rank()==0)
+					params_wgan=nn_wgan.get_parameters();
+				multi_sim_comm.Barrier();
+				multi_sim_comm.Bcast(params_wgan,0);
+			}
+			comm.Bcast(params_wgan,0);
+		}
+		else
+		{
+			if(comm.Get_rank()==0)
+				params_wgan=nn_wgan.get_parameters();
+			comm.Barrier();
+			comm.Bcast(params_wgan,0);
+		}
+		nn_wgan.set_parameters(params_wgan);
+	}
+#endif
+
 	parseFlag("PESHIFT_AUTO_ADJUST",auto_peshift);
 	parseFlag("UNLINEAR_REPLICAS",is_unlinear);
 	parseFlag("DIRECT_AVERAGE",is_direct);
@@ -480,15 +668,7 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 		eff_factor=beta_target/beta0;
 		bias_force=1-eff_factor;
 	}
-	//~ else if(sim_temp>temph||sim_temp<templ)
-	//~ {
-		//~ std::string sts,stl,sth;
-		//~ Tools::convert(sim_temp,sts);
-		//~ Tools::convert(templ,stl);
-		//~ Tools::convert(temph,sth);
-		//~ error("the value of SIM_TEMP("+sts+") must between TEMP_MIN("+
-			//~ stl+") and TEMP_MAX("+sth+")");
-	//~ }
+	
 	parse("FB_INIT",fb_init);
 	parse("RB_FAC1",rb_fac1);
 	parse("RB_FAC2",rb_fac2);
@@ -530,29 +710,52 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 	rct_stride=fb_stride;
 	parse("RCT_STRIDE",rct_stride);
 
-	//~ parse("NORM_TRAJ",norm_trj);
-	//~ parse("ITER_TRAJ",iter_trj);
-	//~ if(((!is_ves)&&norm_trj.size()>0)||(is_ves&&iter_trj.size()>0))
-		//~ norm_output=true;
-	
-	//~ deriv_trj="derivtrj.data";
-	//~ parse("DERIV_TRAJ",deriv_trj);
-	
-	//~ parse("PESHIFT_TRAJ",peshift_trj);
-	//~ if(peshift_trj.size()>0)
-		//~ peshift_output=true;
-	
-	// s(k)=exp(\beta_k*E_shift)/exp(\beta_{k+1}*E_shift)
-	// s(k)=exp[(\beta_k-\beta_{k+1})*E_shift]
 	set_peshift_ratio();
 	if(!read_fb&&!getRestart())
 	{
 		for(unsigned i=0;i!=nreplica;++i)
-		{
-			//~ fb.push_back(-exp(fb_init*(betak[0]-betak[i])));
 			fb.push_back(fb_init*(int_temps[i]-int_temps[0]));
-		}
 	}
+#ifdef __PLUMED_HAS_DYNET
+	if(use_talits)
+	{
+		parm_bias=pc_bias.add_parameters({1,nreplica-1});
+		std::vector<float> init_coe;
+		if(read_fb)
+		{
+			for(unsigned i=1;i!=nreplica;++i)
+				init_coe.push_back(fb[i]);
+		}
+		else
+		{
+			init_coe.resize(nreplica-1);
+			if(use_mw)
+			{
+				if(comm.Get_rank()==0)
+				{
+					if(multi_sim_comm.Get_rank()==0)
+						init_coe=as_vector(*parm_bias.values());
+					multi_sim_comm.Barrier();
+					multi_sim_comm.Bcast(init_coe,0);
+				}
+				comm.Barrier();
+				comm.Bcast(init_coe,0);
+			}
+			else
+			{
+				if(comm.Get_rank()==0)
+					init_coe=as_vector(*parm_bias.values());
+				comm.Barrier();
+				comm.Bcast(init_coe,0);
+			}
+			fb[0]=0;
+			for(unsigned i=0;i!=nreplica-1;++i)
+				fb[i+1]=init_coe[i];
+		}
+		parm_bias.set_value(init_coe);
+	}
+#endif
+
 	if(!partition_initial)
 		partition.resize(nreplica,-1e38);
 
@@ -566,27 +769,9 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 		ofb.addConstantField("COEFFICIENT_TYPE");
 		ofb.addConstantField("NREPLICA");
 		ofb.addConstantField("TARGET_RATIO_ENERGY");
-		if(is_ves&&!only_1st)
-		{
-			ofb.addConstantField("ENERGY_MIN");
-			ofb.addConstantField("ENERGY_MAX");
-		}
 
 		if(fbtrj_output)
 			setupOFile(fb_trj,ofbtrj,use_mw);
-
-		//~ if(is_ves)
-		//~ {
-			//~ if(norm_output)
-				//~ setupOFile(iter_trj,onormtrj,use_mw);
-			//~ 
-			//~ setupOFile(deriv_trj,oderiv,use_mw);
-		//~ }
-		//~ else if(norm_output)
-			//~ setupOFile(norm_trj,onormtrj,use_mw);
-		
-		//~ if(peshift_output)
-			//~ setupOFile(peshift_trj,opstrj,use_mw);
 	}
 	
 	parse("BIAS_FILE",bias_file);
@@ -631,39 +816,6 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 	}
 
 	parse("ITERATE_LIMIT",iter_limit);
-
-	if(is_ves)
-	{
-		if(!is_const)
-		{
-			deriv_ps.assign(nreplica,1.0/nreplica);
-			if(!only_1st)
-			{
-				if(ener_max<=ener_min)
-				plumed_merror("TARGET_MAX must be larger than TARGET_MIN");
-
-				ntarget=floor((ener_max-ener_min)/dU)+1;
-				//~ if(!(read_mean&&read_dev))
-					//~ plumed_merror("2nd order derivative calculation is open but there is no mean or deviation value in fb recording file");
-				dvp2_complete=calc_deriv2();
-				if(dvp2_complete<0.7)
-				{
-					std::string dpc;
-					Tools::convert(dvp2_complete,dpc);
-					plumed_merror("The compuatational comple of 2nd order derivative ("+dpc+") is too low!");
-				}
-			}
-		}
-		if(!read_iter)
-		{
-			double fb_zero=fb[0];
-			for(unsigned i=0;i!=nreplica;++i)
-			{
-				fb[i]-=fb_zero;
-				fb_iter.push_back(fb[i]);
-			}
-		}
-	}
 	
 	rctid=find_rw_id(sim_temp,sim_dtl,sim_dth);
 	fb0=find_rw_fb(rctid,sim_dtl,sim_dth);
@@ -678,12 +830,14 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 	//~ valueRct->set(rct);
 	setRctComponent("rct");
 	setRct(rct);
-	addComponent("force"); componentIsNotPeriodic("force");
-	valueForce=getPntrToComponent("force");
-	addComponent("Potential"); componentIsNotPeriodic("Potential");
-	valuePot=getPntrToComponent("Potential");
-	addComponent("effective"); componentIsNotPeriodic("effective");
-	valueEff=getPntrToComponent("effective");
+	//~ addComponent("force"); componentIsNotPeriodic("force");
+	//~ valueForce=getPntrToComponent("force");
+	addComponent("energy"); componentIsNotPeriodic("energy");
+	valuePot=getPntrToComponent("energy");
+	addComponent("eff_ener"); componentIsNotPeriodic("eff_ener");
+	valueEffEner=getPntrToComponent("eff_ener");
+	addComponent("eff_temp"); componentIsNotPeriodic("eff_temp");
+	valueEffTemp=getPntrToComponent("eff_temp");
 
 	parseVector("RW_TEMP",rw_temp);
 
@@ -821,9 +975,9 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 			log.printf("   with walker number: %d\n",multi_sim_comm.Get_rank());
 			log.printf("\n");
 		}
-		if(is_ves)
+		if(use_talits)
 		{
-			log.printf("  Using variational approach to iterate the fb value\n");
+			log.printf("  Using targeted adversarial learning method to iterate the fb value\n");
 			if(!only_1st)
 			{
 				log.printf("    with calculation of Hessian is open\n");
@@ -874,11 +1028,8 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 			log.printf("  Using debug mod with output file: %s\n",debug_file.c_str());
 
 		log<<"Bibliography "<<
-			plumed.cite("Gao, J. Chem. Phys. 128, 064105 (2008)");
-		if(!is_ves)
-			log<<plumed.cite("Gao, J. Chem. Phys. 128, 134111 (2008)");
-		if(bias_linked)
-			log<<plumed.cite("Yang, Zhang, Che, Yang, and Gao, J. Chem. Phys. 144, 094105 (2016)");
+			plumed.cite("Gao, J. Chem. Phys. 128, 064105 (2008)")<<" "<<
+			plumed.cite("Yang, Niu and Parrinello, J. Phys. Chem. Lett. 9, 6426 (2018)");
 		log<<"\n";
 	}
 	if(bias_output)
@@ -918,11 +1069,14 @@ void ITS_Bias::calculate()
 
 	// U = U_total + E_shift
 	input_energy=cv_energy+peshift;
+	
+	double eff_temp=sim_temp;
 
 	if(equiv_temp)
 	{
 		eff_energy=input_energy*eff_factor;
 		bias_energy=-1*input_energy*bias_force;
+		eff_temp=sim_temp/eff_factor;
 	}
 	else
 	{
@@ -954,8 +1108,8 @@ void ITS_Bias::calculate()
 		bias_energy=eff_energy-input_energy;
 		eff_factor=exp(bgfsum-gfsum)/beta0;
 		bias_force=1.0-eff_factor;
+		eff_temp=sim_temp/eff_factor;
 	}
-		
 
 	setBias(bias_energy);
 	valueRBias->set(bias_energy-rct);
@@ -965,14 +1119,22 @@ void ITS_Bias::calculate()
 		for(unsigned i=0;i!=nbiases;++i)
 			bias_pntrs_[i]->setExtraBiasRatio(-1.0*bias_force*bias_ratio[i]);
 	}
-	
+
 	if(!only_bias)
 		setOutputForce(0,bias_force);
 
-	//~ valueEnergy->set(input_energy);
 	valuePot->set(shift_pot);
-	valueEff->set(eff_energy);
-	valueForce->set(eff_factor);
+	valueEffEner->set(eff_energy);
+	valueEffTemp->set(eff_temp);
+	//~ valueForce->set(eff_factor);
+	
+#ifdef __PLUMED_HAS_DYNET
+	if(use_talits)
+	{
+		sampled_temps.push_back(eff_temp);
+		sampled_effenergy.push_back(eff_energy);
+	}
+#endif
 
 	if(potdis_output)
 	{
@@ -1003,7 +1165,7 @@ void ITS_Bias::calculate()
 	{
 		if(!is_const)
 		{
-			if(is_ves||is_direct)
+			if(is_direct)
 				update_rbfb_direct();
 			else
 				update_rbfb();
@@ -1099,10 +1261,88 @@ void ITS_Bias::calculate()
 			if(auto_peshift&&-1.0*min_ener>peshift)
 				change_peshift(-1.0*min_ener);
 
-			if(is_ves)
-				fb_variational();
+#ifdef __PLUMED_HAS_DYNET
+			if(use_talits)
+			{
+				if(use_mw)
+				{
+					if(comm.Get_rank()==0)
+						multi_sim_comm.Sum(counts);
+					comm.Bcast(counts,0);
+
+					std::vector<float> all_sampled_temps;
+					std::vector<float> all_sampled_effenergy;
+					
+					all_sampled_temps.resize(nw*update_steps,0);
+					all_sampled_effenergy.resize(nw*update_steps,0,0);
+					
+					if(comm.Get_rank()==0)
+					{
+						multi_sim_comm.Allgather(sampled_temps,all_sampled_temps);
+						multi_sim_comm.Allgather(sampled_effenergy,all_sampled_effenergy);
+					}
+					comm.Bcast(all_sampled_temps,0);
+					comm.Bcast(all_sampled_effenergy,0);
+
+					if(comm.Get_rank()==0)
+					{
+						if(multi_sim_comm.Get_rank()==0)
+						{
+							wloss=update_wgan(all_sampled_temps,vec_fw);
+							bloss=update_bias(all_sampled_effenergy,vec_fw);
+							vec_fw.resize(0);
+							new_coe=as_vector(*parm_bias.values());
+							params_wgan=nn_wgan.get_parameters();
+						}
+						multi_sim_comm.Barrier();
+						multi_sim_comm.Bcast(wloss,0);
+						multi_sim_comm.Bcast(bloss,0);
+						multi_sim_comm.Bcast(new_coe,0);
+						multi_sim_comm.Bcast(params_wgan,0);
+					}
+					comm.Barrier();
+					comm.Bcast(wloss,0);
+					comm.Bcast(bloss,0);
+					comm.Bcast(new_coe,0);
+					comm.Bcast(params_wgan,0);
+				}
+				else
+				{
+					if(comm.Get_rank()==0)
+					{
+						wloss=update_wgan(sampled_temps,vec_fw);
+						bloss=update_bias(sampled_effenergy,vec_fw);
+						vec_fw.resize(0);
+						new_coe=as_vector(*parm_bias.values());
+						params_wgan=nn_wgan.get_parameters();
+					}
+					comm.Barrier();
+					comm.Bcast(wloss,0);
+					comm.Bcast(bloss,0);
+					comm.Bcast(new_coe,0);
+					comm.Bcast(params_wgan,0);
+				}
+				parm_bias.set_value(new_coe);
+				nn_wgan.set_parameters(params_wgan);
+				
+				valueLwgan->set(wloss);
+				valueLbias->set(bloss);
+				
+				fb[0]=0;
+				for(unsigned i=0;i!=nreplica-1;++i)
+					fb[i+1]=new_coe[i];
+				
+				sampled_temps.resize(0);
+				sampled_effenergy.resize(0);
+				counts=0;
+			}
 			else
+			{
+#endif
 				fb_iteration();
+#ifdef __PLUMED_HAS_DYNET
+			}
+#endif
 			
 			fb0=find_rw_fb(rctid,sim_dtl,sim_dth);
 			rct=calc_rct(beta0,fb0,fb_ratio0);
@@ -1220,7 +1460,7 @@ void ITS_Bias::mw_merge_rbfb()
 			exp_added(rbzb[j],all_rbzb[i*rbzb.size()+j]);
 		}
 	}
-	if(is_ves||is_direct)
+	if(is_direct)
 	{
 		for(unsigned i=0;i!=nreplica;++i)
 		{
@@ -1369,151 +1609,15 @@ void ITS_Bias::fb_iteration()
 		plumed_merror("FB value become NaN. See debug file or \"error.data\" file for detailed information.");
 }
 
-void ITS_Bias::fb_variational()
-{	
-	// The average of 1st order drivative of bias potential in simulation
-	std::vector<double> deriv_aver;
-	// The Gradient of Omega
-	std::vector<double> gradient;
-	
-	for(unsigned i=0;i!=nreplica;++i)
-	{
-		deriv_aver.push_back(exp(rbfb[i])/norm_step);
-		gradient.push_back((deriv_aver[i]-deriv_ps[i])/beta0);
-	}
-
-	// fb_diff[i]=fb_iter[i]-fb[i]=a(i)-<a(i)>
-	std::vector<double> fb_diff;
-	// The Hessian of Omega
-	std::vector<std::vector<double> > hessian(nreplica,std::vector<double>(nreplica,0));
-	if(!only_1st)
-	{
-		std::vector<double>::const_iterator idv2=deriv2_ps.begin();
-		for(unsigned i=0;i!=nreplica;++i)
-		{
-			fb_diff.push_back(fb_iter[i]-fb[i]);
-			for(unsigned j=i;j!=nreplica;++j)
-			{
-				// <\partial V_bias(U;a)/\partial a_i>*<\partial V_bias(U;a)/\partial a_j>
-				double d2a=deriv_aver[i]*deriv_aver[j];
-				double d2p=*(idv2++);
-				hessian[i][j]=(d2p-d2a)/beta0;
-				if(i!=j)
-					hessian[j][i]=hessian[i][j];
-			}
-		}
-	}
-
-	//~ double fb_zero;
-	std::vector<double> o2as;
-	//~ bool need_rescale=false;
-	double fb_zero;
-	bool is_nan=false;
-	for(unsigned i=0;i!=nreplica;++i)
-	{
-		double fin_diff;
-		if(only_1st)
-			fin_diff=step_size*gradient[i];
-		else
-		{
-			double o2a=0;
-			for(unsigned j=0;j!=nreplica;++j)
-				o2a+=hessian[i][j]*fb_diff[j];
-			o2as.push_back(o2a);
-			fin_diff=step_size*(gradient[i]+o2a);
-		}
-
-		if(i==0)
-		{
-			fb_zero=fin_diff;
-			fin_diff=0;
-		}
-		else
-		{
-			fin_diff-=fb_zero;
-			fb_iter[i]-=fin_diff;
-			
-			if(iter_limit>0)
-			{
-				unsigned itid;
-				if(i>iter_limit)
-					itid=i-iter_limit;
-				else
-					itid=0;
-				
-				if(fb_iter[i]>fb_iter[itid])
-					fb_iter[i]=fb_iter[itid];
-			}
-			//~ else
-			//~ {
-				//~ double fb_i=fb[i]+(fb_iter[i]-fb[i])/(mcycle+1);
-				//~ if(fb_i>=fb[i-1])
-					//~ fb_iter[i]=fb_iter[i-1];
-			//~ }
-
-			fb[i]+=(fb_iter[i]-fb[i])/(mcycle+1);
-		}
-		if(fb[i]!=fb[i])
-			is_nan=true;
-	}
-
-	//~ if(norm_output&&mcycle%fbtrj_stride==0)
-	//~ {
-		//~ oderiv.fmtField(" %f");
-		//~ oderiv.printField("step",int(mcycle));
-		//~ for(unsigned i=0;i!=nreplica;++i)
-		//~ {
-			//~ std::string id;
-			//~ Tools::convert(i,id);
-			//~ std::string fbid="FB"+id;
-			//~ oderiv.printField(fbid,deriv_aver[i]);
-		//~ }
-		//~ oderiv.printField();
-		//~ oderiv.flush();
-	//~ }
-
-	if(is_debug||is_nan)
-	{
-		if(!is_debug)
-		{
-			odebug.link(*this);
-			odebug.open("error.data");
-			odebug.addConstantField("ITERATE_STEP");
-			odebug.addConstantField("NORM_STEP");
-			odebug.addConstantField("STEP_SIZE");
-			odebug.addConstantField("PESHIFT");
-		}
-		odebug.printf("--- FB Variational ---\n");
-		odebug.printField("ITERATE_STEP",int(mcycle));
-		odebug.printField("NORM_STEP",int(norm_step));
-		odebug.printField("STEP_SIZE",step_size);
-		odebug.printField("PESHIFT",peshift);
-		for(unsigned i=0;i!=nreplica;++i)
-		{
-			odebug.printField("index",int(i));
-			odebug.printField("rbfb",rbfb[i]);
-			odebug.printField("deriv_aver",deriv_aver[i]);
-			odebug.printField("deriv_ps",deriv_ps[i]);
-			odebug.printField("gradient",gradient[i]);
-			if(!only_1st)
-				odebug.printField("o2a",o2as[i]);
-			odebug.printField("fb",fb[i]);
-			odebug.printField("fb_iter",fb_iter[i]);
-			odebug.printField();
-		}
-		odebug.printf("--- Variational END ---\n");
-	}
-	if(is_nan)
-		plumed_merror("FB value become NaN. See debug file or \"error.data\" file for detailed information.");
-}
-
 void ITS_Bias::output_fb()
 {
 	if(mcycle%fb_stride==0)
 	{
-		if(is_ves)
-			ofb.printField("ITERATE_METHOD","Variational");
+#ifdef __PLUMED_HAS_DYNET
+		if(use_talits)
+			ofb.printField("ITERATE_METHOD","TALITS");
 		else
+#endif
 			ofb.printField("ITERATE_METHOD","Traditional");
 		ofb.printField("ITERATE_STEP",int(mcycle));
 		ofb.printField("BOLTZMANN_CONSTANT",kB);
@@ -1521,11 +1625,7 @@ void ITS_Bias::output_fb()
 		ofb.printField("COEFFICIENT_TYPE",(is_set_temps?"TEMPERATURE":"RATIO"));
 		ofb.printField("NREPLICA",int(nreplica));
 		ofb.printField("TARGET_RATIO_ENERGY",ratio_energy);
-		if(is_ves&&!only_1st)
-		{
-			ofb.printField("ENERGY_MIN",ener_min);
-			ofb.printField("ENERGY_MAX",ener_max);
-		}
+
 		for(unsigned i=0;i!=nreplica;++i)
 		{
 			std::string id;
@@ -1536,17 +1636,7 @@ void ITS_Bias::output_fb()
 			else
 				ofb.printField("temperature",int_temps[i]);
 			ofb.printField("fb_value",fb[i]);
-			if(is_ves)
-			{
-				ofb.printField("fb_iteration",fb_iter[i]);
-				if(!only_1st)
-				{
-					ofb.printField("energy_mean",energy_mean[i]);
-					ofb.printField("energy_dev",energy_dev[i]);
-				}
-			}
-			else
-				ofb.printField("norm_value",norml[i]);
+			ofb.printField("norm_value",norml[i]);
 			ofb.printField("partition",partition[i]);
 			ofb.printField();
 		}
@@ -1576,13 +1666,6 @@ void ITS_Bias::output_fb()
 				if(fbtrj_output)
 					ofbtrj.printField(fbid,fb[i]);
 
-				//~ if(norm_output)
-				//~ {
-					//~ if(is_ves)
-						//~ onormtrj.printField(fbid,fb_iter[i]);
-					//~ else
-						//~ onormtrj.printField(fbid,norml[i]);
-				//~ }
 			}
 			ofbtrj.printField();
 			ofbtrj.flush();
@@ -1793,27 +1876,8 @@ unsigned ITS_Bias::read_fb_file(const std::string& fname,double& _kB,double& _pe
 
 		if(!is_const)
 		{
-			if(is_ves)
-			{
-				if(ifb.FieldExist("fb_iteration"))
-					read_iter=true;
-				if(!only_1st)
-				{
-					if(ifb.FieldExist("energy_mean"))
-						read_mean=true;
-					if(ifb.FieldExist("energy_dev"))
-						read_dev=true;
-					if(ifb.FieldExist("ENERGY_MIN"))
-						ifb.scanField("ENERGY_MIN",ener_min);
-					if(ifb.FieldExist("ENERGY_MAX"))
-						ifb.scanField("ENERGY_MAX",ener_max);
-				}
-			}
-			else
-			{
-				if(ifb.FieldExist("norm_value"))
-					read_norm=true;
-			}
+			if(ifb.FieldExist("norm_value"))
+				read_norm=true;
 		}
 		
 		if(ifb.FieldExist("partition"))
@@ -1822,16 +1886,7 @@ unsigned ITS_Bias::read_fb_file(const std::string& fname,double& _kB,double& _pe
 			partition_initial=true;
 		}
 
-		if(is_ves)
-		{
-			if(read_iter)
-				fb_iter.resize(_ntemp);
-			if(read_mean)
-				energy_mean.resize(_ntemp);
-			if(read_dev)
-				energy_dev.resize(_ntemp);
-		}
-		else if(read_norm)
+		if(read_norm)
 			norml.resize(_ntemp);
 		
 		double tmpfb;
@@ -1852,28 +1907,8 @@ unsigned ITS_Bias::read_fb_file(const std::string& fname,double& _kB,double& _pe
 				int_temps[i]=tmpt;
 				int_ratios[i]=tmpt/sim_temp;
 			}
-			if(is_ves)
-			{
-				if(read_iter)
-				{
-					double tmpif;
-					ifb.scanField("fb_iteration",tmpif);
-					fb_iter[i]=tmpif;
-				}
-				if(read_mean)
-				{
-					double tmpmean;
-					ifb.scanField("energy_mean",tmpmean);
-					energy_mean[i]=tmpmean;
-				}
-				if(read_dev)
-				{
-					double tmpdev;
-					ifb.scanField("energy_dev",tmpdev);
-					energy_dev[i]=tmpdev;
-				}
-			}
-			else if(read_norm)
+			
+			if(read_norm)
 			{
 				double tmpnb;
 				ifb.scanField("norm_value",tmpnb);
@@ -1891,18 +1926,6 @@ unsigned ITS_Bias::read_fb_file(const std::string& fname,double& _kB,double& _pe
 		}
 		++read_count;
 	}
-	if(iter_method=="Traditional")
-	{
-		if(is_ves)
-			plumed_merror("The iterate method is variational but the fb input file is a traditional input file");
-	}
-	else if(iter_method=="Variational")
-	{
-		if(!is_ves)
-			plumed_merror("The iterate method is traditional but the fb input file is a variational input file");
-	}
-	else
-		plumed_merror("unknown iterate method: \""+iter_method+"\"");
 	
 	peshift=_peshift;
 	
@@ -1956,8 +1979,6 @@ unsigned ITS_Bias::read_fb_file(const std::string& fname,double& _kB,double& _pe
 void ITS_Bias::change_peshift(double new_shift)
 {
 	fb_rescale(new_shift-peshift);
-	if(is_ves)
-		iter_rescale(new_shift-peshift);
 	peshift=new_shift;
 	set_peshift_ratio();
 }
@@ -2019,97 +2040,36 @@ void ITS_Bias::output_bias()
 	obias.close();
 }
 
-double ITS_Bias::calc_deriv2()
-{
-	deriv2_ps.assign(nreplica*(nreplica+1)/2,0);
-	double complete=0;
-	for(unsigned id_U=0;id_U!=ntarget;++id_U)
-	{
-		double ener=ener_min+id_U*dU;
-		std::vector<double> prob;
-		double psum=0;
-		for(unsigned i=0;i!=nreplica;++i)
-		{
-			double pp=exp(-pow((ener-energy_mean[i])/energy_dev[i],2)/2)/energy_dev[i];
-			prob.push_back(pp);
-			psum+=pp;
-		}
-		complete+=psum;
-		std::vector<double>::iterator idv2=deriv2_ps.begin();
-		for(unsigned i=0;i!=nreplica;++i)
-		{
-			for(unsigned j=i;j!=nreplica;++j)
-			{
-				double vv=(prob[i]*prob[j]/psum);
-				*(idv2++)+=vv;
-			}
-		}
-	}
-	double normsum=dU/(nreplica*sqrt(2*pi));
-	complete*=normsum;
-
-	for(unsigned i=0;i!=deriv2_ps.size();++i)
-		deriv2_ps[i]*=normsum;
-	return complete;
-}
-
-std::vector<double> ITS_Bias::omega2_alpha(const std::vector<std::vector<double> >& hessian,const std::vector<double>& dalpha)
-{
-	std::vector<double> result;
-	for(unsigned i=0;i!=hessian.size();++i)
-	{
-		double tmp=0;
-		for(unsigned j=0;j!=dalpha.size();++j)
-			tmp+=hessian[i][j]*dalpha[j];
-		result.push_back(tmp);
-	}
-	return result;
-}
-
-std::vector<double> ITS_Bias::omega2_alpha(const std::vector<double>& hessian,const std::vector<double>& dalpha)
-{
-	std::vector<double> result;
-	for(unsigned i=0;i!=dalpha.size();++i)
-		result.push_back(hessian[i]*dalpha[i]);
-	return result;
-}
-
 
 #ifdef __PLUMED_HAS_DYNET
 
 // training the parameter of WGAN
-float ITS_Bias::update_wgan(const std::vector<float>& all_input_arg,std::vector<std::vector<float>>& vec_fw)
+float ITS_Bias::update_wgan(const std::vector<float>& all_sampled_temps,std::vector<std::vector<float>>& vec_fw)
 {
 	ComputationGraph cg;
-	Dim xs_dim({narg},batch_size);
-	Dim xt_dim({narg},ntarget);
-	
-	//~ std::random_shuffle(input_target.begin(), input_target.end());
+	Dim xs_dim({1},batch_size);
+	Dim xt_dim({1},nreplica);
 
-	unsigned wsize=batch_size*narg;
-	std::vector<float> input_sample(wsize);
-	Expression x_sample=input(cg,xs_dim,&input_sample);
-	Expression x_target=input(cg,xt_dim,&input_target);
-	Expression p_target=input(cg,pt_dim,&target_dis);
+	std::vector<float> sampled_batch(batch_size);
+	Expression x_sample=input(cg,xs_dim,&sampled_batch);
+	Expression x_target=input(cg,xt_dim,&int_temps);
 
 	Expression y_sample=nn_wgan.run(x_sample,cg);
 	Expression y_target=nn_wgan.run(x_target,cg);
-	
-	Expression l_target=y_target*p_target;
 
 	Expression loss_sample=mean_batches(y_sample);
-	Expression loss_target=mean_batches(l_target);
+	Expression loss_target=mean_batches(y_target);
 
 	Expression loss_wgan=loss_sample-loss_target;
 	
 	double wloss=0;
 	double loss;
-	std::vector<std::vector<float>> vec_input_sample;
+	std::vector<std::vector<float>> vec_sampled_batch;
 	for(unsigned i=0;i!=nepoch;++i)
 	{
-		for(unsigned j=0;j!=wsize;++j)
-			input_sample[j]=all_input_arg[i*wsize+j];
-		vec_input_sample.push_back(input_sample);
+		for(unsigned j=0;j!=batch_size;++j)
+			sampled_batch[j]=all_sampled_temps[i*wsize+j];
+		vec_sampled_batch.push_back(sampled_batch);
 		loss = as_scalar(cg.forward(loss_wgan));
 		wloss += loss;
 		cg.backward(loss_wgan);
@@ -2121,7 +2081,7 @@ float ITS_Bias::update_wgan(const std::vector<float>& all_input_arg,std::vector<
 	
 	for(unsigned i=0;i!=nepoch;++i)
 	{
-		input_sample=vec_input_sample[i];
+		sampled_temps=vec_sampled_batch[i];
 		vec_fw.push_back(as_vector(cg.forward(y_sample)));
 	}
 	
@@ -2129,19 +2089,23 @@ float ITS_Bias::update_wgan(const std::vector<float>& all_input_arg,std::vector<
 }
 
 // update the coeffients of the basis function
-float ITS_Bias::update_bias(const std::vector<float>& all_input_bias,const std::vector<std::vector<float>>& vec_fw)
+float ITS_Bias::update_bias(const std::vector<float>& all_sampled_effenergy,const std::vector<std::vector<float>>& vec_fw)
 {
 	ComputationGraph cg;
-	Expression efb = parameter(cg,pfb);
+	Expression efb = parameter(cg,parm_bias);
 	
 	Dim input_dim({1},batch_size);
-	Expression x = input(cg,input_dim,&shift_ener);
+	std::vector<float> biases_batch(batch_size);
+	Expression x = input(cg,input_dim,&biases_batch);
 	std::vector<Expression> vgE;
-	for(unsigned i=0;i!=nreplica;++i)
+	
+	for(unsigned i=1;i!=nreplica;++i)
 		vgE.push_back(-1.0*betak[i]*x);
 	Expression egE = reshape(concatenate_cols(vgE), Dim({nreplica},batch_size));
 	Expression egf = efb + egE;
-	Expression ueff = -1.0*logsumexp_dim(egf,0);
+	Expression lsegf = logsumexp_dim(egf,0);
+	Expression egf0 = -1.0*betak[0]*x;
+	Expression ueff = -1.0*logsumexp({egf0,lsegf});
 
 	Expression loss_bias = fw * ueff;
 	Expression loss_mean = mean_batches(loss_bias);
@@ -2154,7 +2118,7 @@ float ITS_Bias::update_bias(const std::vector<float>& all_input_bias,const std::
 	{
 		fw_batch=vec_fw[i];
 		for(unsigned j=0;j!=batch_size;++j)
-			shift_ener[j]=all_input_bias[i*batch_size+j];
+			biases_batch[j]=all_sampled_effenergy[i*batch_size+j];
 		bloss += as_scalar(cg.forward(loss_mean));
 		cg.backward(loss_mean);
 		train_bias->update();

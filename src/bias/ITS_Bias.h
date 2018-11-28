@@ -228,6 +228,10 @@ private:
 	
 #ifdef __PLUMED_HAS_DYNET
 
+	bool use_talits;
+	
+	unsigned random_seed;
+	
 	double clip_threshold_bias;
 	double clip_threshold_wgan;
 	
@@ -241,6 +245,9 @@ private:
 	std::vector<float> lr_wgan;
 	std::vector<float> hyper_params_bias;
 	std::vector<float> hyper_params_wgan;
+	
+	std::vector<float> sampled_temps;
+	std::vector<float> sampled_effenergy;
 	
 	ParameterCollection pc_bias;
 	ParameterCollection pc_wgan;
@@ -260,8 +267,9 @@ private:
 	
 	//~ Value* valueEnergy;
 	Value* valuePot;
-	Value* valueEff;
-	Value* valueForce;
+	Value* valueEffEner;
+	//~ Value* valueForce;
+	Value* valueEffTemp;
 	Value* valueRBias;
 	Value* valueRwfb;
 	std::vector<Value*> valueRwbias;
