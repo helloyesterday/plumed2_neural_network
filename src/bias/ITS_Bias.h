@@ -43,6 +43,7 @@
 
 #ifdef __PLUMED_HAS_DYNET
 #include "tools/DynetTools.h"
+using namespace dytools;
 #endif
 
 namespace PLMD{
@@ -97,10 +98,6 @@ private:
 	std::vector<double> pot_norm;
 	std::vector<double> partition;
 
-	std::vector<double> energy_mean;
-	std::vector<double> energy_dev;
-	std::vector<double> fb_iter;
-
 	std::vector<double> rw_temp;
 	std::vector<double> rw_beta;
 	std::vector<double> rw_factor;
@@ -120,11 +117,6 @@ private:
 	std::vector<double> force_record;
 	std::vector<double> bias_ratio;
 	std::vector<double> peshift_ratio;
-
-	// The average of 1st order drivative of bias potential in target distribution
-	std::vector<double> deriv_ps;
-	// The average of 2nd order drivative of bias potential in target distribution
-	std::vector<double> deriv2_ps;
 
 	unsigned long step;
 	unsigned norm_step;
@@ -175,9 +167,6 @@ private:
 	unsigned rct_stride;
 	unsigned bias_stride;
 	unsigned bias_bins;
-	unsigned potdis_num;
-	unsigned potdis_step;
-	unsigned potdis_update;
 	unsigned nbiases;
 	unsigned rctid;
 
@@ -191,21 +180,16 @@ private:
 	std::string target_file;
 	std::string bias_file;
 	std::string debug_file;
-	std::string potdis_file;
 	std::string rbfb_file;
 	std::string rct_file;
 
 	OFile ofb;
 	OFile ofbtrj;
-	//~ OFile onormtrj;
-	//~ OFile oderiv;
-	//~ OFile opstrj;
 	OFile ofw;
 	OFile obias;
 	OFile orbfb;
 	OFile orct;
 	OFile odebug;
-	OFile opotdis;
 
 	double gfsum;
 	double bgfsum;
@@ -219,35 +203,38 @@ private:
 	double logN;
 	double ratio_norm;
 	double fb_ratio0;
-
-	unsigned ntarget;
-	double ener_min;
-	double ener_max;
-	double dU;
-	double dvp2_complete;
 	
 #ifdef __PLUMED_HAS_DYNET
 
 	bool use_talits;
 	
 	unsigned random_seed;
+	unsigned nepoch;
+	unsigned batch_size;
+	unsigned ntarget;
 	
 	double clip_threshold_bias;
 	double clip_threshold_wgan;
 	
+	float target_min;
+	float target_max;
+	float target_space;
 	float clip_left;
 	float clip_right;
 	
 	std::string algorithm_bias;
 	std::string algorithm_wgan;
+	std::string targetdis_file;
 	
 	std::vector<float> lr_bias;
 	std::vector<float> lr_wgan;
 	std::vector<float> hyper_params_bias;
 	std::vector<float> hyper_params_wgan;
 	
-	std::vector<float> sampled_temps;
-	std::vector<float> sampled_effenergy;
+	std::vector<float> temps_sample;
+	std::vector<float> temps_target;
+	std::vector<float> temps_dis;
+	std::vector<float> energy_sample;
 	
 	ParameterCollection pc_bias;
 	ParameterCollection pc_wgan;
@@ -265,11 +252,9 @@ private:
 	
 	std::vector<Bias*> bias_pntrs_;
 	
-	//~ Value* valueEnergy;
 	Value* valuePot;
-	Value* valueEffEner;
-	//~ Value* valueForce;
-	Value* valueEffTemp;
+	Value* valueUeff;
+	Value* valueTeff;
 	Value* valueRBias;
 	Value* valueRwfb;
 	std::vector<Value*> valueRwbias;
@@ -292,7 +277,6 @@ private:
 
 	inline void coe_rescale(double shift,std::vector<double>& coe);
 	inline void fb_rescale(double shift){coe_rescale(shift,fb);}
-	inline void iter_rescale(double shift){coe_rescale(shift,fb_iter);}
 	void change_peshift(double new_shift);
 	void set_peshift_ratio();
 

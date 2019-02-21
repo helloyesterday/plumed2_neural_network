@@ -137,9 +137,12 @@ void ITS_Bias::registerKeywords(Keywords& keys)
 	keys.addOutputComponent("rbias","default","the revised bias potential using rct");
 	keys.addOutputComponent("rct","default","the reweighting revise factor");
 	keys.addOutputComponent("energy","default","the instantaneous value of the potential energy of the system");
-	keys.addOutputComponent("eff_ener","default","the instantaneous value of the effective potential");
-	keys.addOutputComponent("eff_temp","default","the instantaneous value of the bias force");
-	//~ keys.addOutputComponent("rbias_T","RW_TEMP","the revised bias potential at different temperatures");
+	keys.addOutputComponent("Ueff","default","the instantaneous value of the effective potential");
+	keys.addOutputComponent("Teff","default","the instantaneous value of the bias force");
+#ifdef __PLUMED_HAS_DYNET
+	keys.addOutputComponent("wloss","USE_TALITS","loss function of the W-GAN");
+	keys.addOutputComponent("bloss","USE_TALITS","loss function of the neural network of bias function");
+#endif
 	keys.addOutputComponent("rwfb","DEBUG_FILE","the revised bias potential using rct");
 	ActionWithValue::useCustomisableComponents(keys);
 	keys.remove("ARG");
@@ -163,7 +166,6 @@ void ITS_Bias::registerKeywords(Keywords& keys)
 	keys.addFlag("FB_FIXED",false,"to fix the fb value without update");
 	keys.addFlag("MULTIPLE_WALKERS",false,"use multiple walkers");
 	keys.addFlag("VARIATIONAL",false,"use variational approach to iterate the fb value");
-	//~ keys.addFlag("ONLY_FIRST_ORDER",false,"only to calculate the first order of Omega (gradient) in variational approach");
 	keys.addFlag("TEMP_CONTRIBUTE",false,"use the contribution of each temperatue to calculate the derivatives instead of the target distribution");
 	keys.addFlag("PESHIFT_AUTO_ADJUST",false,"automatically adjust the PESHIFT value during the fb iteration");
 	keys.addFlag("UNLINEAR_REPLICAS",false,"to setup the segments of temperature be propotional to the temperatues. If you setup the REPLICA_RATIO_MIN value, this term will be automatically opened.");
@@ -174,8 +176,12 @@ void ITS_Bias::registerKeywords(Keywords& keys)
 	keys.addFlag("USE_TALITS",false,"use targeted adversarial learning ITS");
 	keys.add("optional","ALGORITHM_BIAS","the algorithm to train the neural network of bias function");
 	keys.add("optional","ALGORITHM_WGAN","the algorithm to train the W-GAN");
-	keys.add("optional","UPDATE_STEPS","the number of step to update");
+	keys.add("optional","TARGET_MIN","the lower bounds of the target distribution of effective temperatures");
+	keys.add("optional","TARGET_MAX","the upper bounds of the target distribution of effective temperatures");
+	keys.add("optional","TARGET_BINS","the number of bins of the target distribution of effective temperatures");
+	keys.add("optional","TARGETDIST_FILE","read target distribution from file");
 	keys.add("optional","EPOCH_NUM","number of epoch for each update per walker");
+	keys.add("optional","PRE_UPDATE","");
 	keys.add("optional","HIDDEN_NUMBER","the number of hidden layers for W-GAN");
 	keys.add("optional","HIDDEN_LAYER","the dimensions of each hidden layer  for W-GAN");
 	keys.add("optional","HIDDEN_ACTIVE","active function of each hidden layer  for W-GAN");
@@ -183,6 +189,12 @@ void ITS_Bias::registerKeywords(Keywords& keys)
 	keys.add("optional","CLIP_RIGHT","the right value to clip");
 	keys.add("optional","WGAN_FILE","file name of the coefficients of W-GAN");
 	keys.add("optional","WGAN_OUTPUT","the frequency (how many period of update) to out the coefficients of W-GAN");
+	keys.add("optional","LEARN_RATE_BIAS","the learning rate for training the neural network of bias function");
+	keys.add("optional","LEARN_RATE_WGAN","the learning rate for training the W-GAN");
+	keys.add("optional","HYPER_PARAMS_BIAS","other hyperparameters for training the neural network of bias function");
+	keys.add("optional","HYPER_PARAMS_WGAN","other hyperparameters for training the W-GAn");
+	keys.add("optional","CLIP_THRESHOLD_BIAS","the clip threshold for training the neural network of bias function");
+	keys.add("optional","CLIP_THRESHOLD_WGAN","the clip threshold for training the W-GAn");
 #endif
 
 	keys.add("optional","START_CYCLE","the start step for fb updating");
@@ -247,8 +259,6 @@ ITS_Bias::~ITS_Bias()
 	}
 	if(is_debug)
 		odebug.close();
-	if(potdis_output)
-		opotdis.close();
 	if(rbfb_output)
 		orbfb.close();
 }
@@ -259,13 +269,12 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 	fb_init(0.0),fb_bias(0.0),rb_fac1(0.5),rb_fac2(0.0),step_size(1.0),
 	is_const(false),rw_output(false),
 	read_norm(false),bias_output(false),
-	rbfb_output(false),is_debug(false),potdis_output(false),
+	rbfb_output(false),is_debug(false),
 	bias_linked(false),only_bias(false),is_read_ratio(false),
 	is_set_temps(false),is_set_ratios(false),is_norm_rescale(false),
 	read_fb(false),read_iter(false),fbtrj_output(false),rct_output(false),
 	partition_initial(false),
-	start_cycle(0),fb_stride(1),bias_stride(1),potdis_step(1),rctid(0),
-	min_ener(1e38),pot_bin(1),dU(1)
+	start_cycle(0),fb_stride(1),bias_stride(1),rctid(0)
 #ifdef __PLUMED_HAS_DYNET
 	,train_bias(NULL),train_wgan(NULL),nn_wgan(pc_wgan)
 #endif
@@ -305,8 +314,13 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 	parseFlag("FB_FIXED",is_const);
 	parseFlag("EQUIVALENT_TEMPERATURE",equiv_temp);
 	parseFlag("MULTIPLE_WALKERS",use_mw);
+	
+	parse("PACE",update_step);
+	if(update_step==0)
+		plumed_merror("PACE cannot be 0");
 #ifdef __PLUMED_HAS_DYNET
 	parseFlag("USE_TALITS",use_talits);
+	
 	std::vector<float> other_params_bias,other_params_wgan;
 	std::vector<unsigned> hidden_layers;
 	std::vector<std::string> hidden_active;
@@ -350,6 +364,12 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 		
 		dynet::initialize(params);
 		
+		nepoch=1;
+		parse("EPOCH_NUM",nepoch);
+		plumed_massert(nepoch>0,"EPOCH_NUM must be larger than 0!");
+		batch_size=update_step/nepoch;
+		plumed_massert((update_step-batch_size*nepoch)==0,"UPDATE_STEPS must be divided exactly by EPOCH_NUM");
+		
 		algorithm_bias="ADAM";
 		parse("ALGORITHM_BIAS",algorithm_bias);
 		algorithm_wgan="ADAM";
@@ -357,7 +377,6 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 		
 		parseVector("LEARN_RATE_BIAS",lr_bias);
 		parseVector("LEARN_RATE_WGAN",lr_wgan);
-		
 		
 		parseVector("HYPER_PARAMS_BIAS",other_params_bias);
 		parseVector("HYPER_PARAMS_BIAS",other_params_wgan);
@@ -372,11 +391,11 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 				hidden_layers.assign(nhidden,8);
 			else if(hidden_layers.size()==1)
 			{
-				unsigned hl0=hidden_layers[0]
-				hidden_layers.assign(nhidden,hl);
+				unsigned hl0=hidden_layers[0];
+				hidden_layers.assign(nhidden,hl0);
 			}
 			else
-				plumed_merror("The number of HIDDEN_LAYER must be equal to HIDDEN_NUMBER!")
+				plumed_merror("The number of HIDDEN_LAYER must be equal to HIDDEN_NUMBER!");
 		}
 		
 		parseVector("HIDDEN_ACTIVE",hidden_active);
@@ -390,7 +409,7 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 				hidden_active.assign(nhidden,ha0);
 			}
 			else
-				plumed_merror("The number of HIDDEN_ACTIVE must be equal to HIDDEN_NUMBER!")
+				plumed_merror("The number of HIDDEN_ACTIVE must be equal to HIDDEN_NUMBER!");
 		}
 		
 		clip_left=-0.01;
@@ -515,12 +534,6 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 		plumed_merror("the range of temperatures must be setup (TEMP_MIN/TEMP_MAX or REPLICA_RATIO_MIN/REPLICA_RATIO_MAX) or read from file (FB_READ_FILE).");
 	
 	parse("START_CYCLE",start_cycle);
-
-	ener_min=peshift;
-	parse("ENERGY_MIN",ener_min);
-	ener_max=ener_min+1000;
-	parse("ENERGY_MAX",ener_max);
-	parse("ENERGY_ACCURACY",dU);
 
 	double _kB=kB;
 	double _peshift=peshift;
@@ -692,10 +705,6 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 	fb_rct.assign(nreplica,0);
 	peshift_ratio.assign(nreplica,0);
 
-	parse("PACE",update_step);
-	if(update_step==0)
-		plumed_merror("PACE cannot be 0");
-
 	parse("FB_STRIDE",fb_stride);
 
 	parse("FBTRAJ_FILE",fb_trj);
@@ -716,17 +725,88 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 		for(unsigned i=0;i!=nreplica;++i)
 			fb.push_back(fb_init*(int_temps[i]-int_temps[0]));
 	}
+	
+	rctid=find_rw_id(sim_temp,sim_dtl,sim_dth);
+	
 #ifdef __PLUMED_HAS_DYNET
 	if(use_talits)
 	{
-		parm_bias=pc_bias.add_parameters({1,nreplica-1});
-		std::vector<float> init_coe;
-		if(read_fb)
+		parse("TARGETDIST_FILE",targetdis_file);
+		if(targetdis_file.size()>0)
 		{
-			for(unsigned i=1;i!=nreplica;++i)
-				init_coe.push_back(fb[i]);
+			IFile itarget;
+			itarget.link(*this);
+			itarget.open(targetdis_file.c_str());
+			itarget.allowIgnoredFields();
+
+			if(!itarget.FieldExist("temp"))
+				plumed_merror("Cannot found Field \"temp\"");
+			if(!itarget.FieldExist("targetdist"))
+				plumed_merror("Cannot found Field \"targetdist\"");
+
+			double tmin;
+			if(itarget.FieldExist("max_temp"))
+				itarget.scanField("max_temp",tmin);
+			target_min=tmin;
+
+			double tmax;
+			if(itarget.FieldExist("max_temp"))
+				itarget.scanField("max_temp",tmax);
+			target_max=tmax;
+			
+			int tbins;
+			if(itarget.FieldExist("nbins_temp"))
+				itarget.scanField("nbins_temp",tbins);
+			else
+				plumed_merror("Cannot found Field \"nbins_temp\"");
+				
+			if(tbins>0)
+				ntarget=tbins;
+			else
+				plumed_merror("nbins_temp must be larger than 0!");
+				
+			double sum=0;
+			for(unsigned i=0;i!=ntarget;++i)
+			{
+				double tt;
+				itarget.scanField("temp",tt);
+				temps_target.push_back(tt);
+				
+				double p0;
+				itarget.scanField("targetdist",p0);
+				temps_dis.push_back(p0);
+				
+				sum+=p0;
+				itarget.scanField();
+			}
+			itarget.close();
+			comm.Barrier();
+			for(unsigned i=0;i!=ntarget;++i)
+				temps_dis[i]/=(sum/ntarget);
 		}
 		else
+		{
+			target_min=templ;
+			parse("TARGET_MIN",target_min);
+			target_max=temph;
+			parse("TARGET_MAX",target_max);
+			ntarget=nreplica-1;
+			parse("TARGET_BINS",ntarget);
+			
+			target_space=(target_max-target_min)/ntarget;
+			++ntarget;
+			
+			for(unsigned i=0;i!=ntarget;++i)
+			{
+				temps_dis.push_back(1.0);
+				temps_target.push_back(target_min+i*target_space);
+			}
+		}
+
+		parm_bias=pc_bias.add_parameters({nreplica-1});
+		std::vector<float> init_coe;
+		
+		if(!read_fb)
 		{
 			init_coe.resize(nreplica-1);
 			if(use_mw)
@@ -748,10 +828,21 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 				comm.Barrier();
 				comm.Bcast(init_coe,0);
 			}
-			fb[0]=0;
-			for(unsigned i=0;i!=nreplica-1;++i)
-				fb[i+1]=init_coe[i];
 		}
+		
+		float fb1=init_coe[0];
+		if(rctid==0)
+			fb1=0;
+		
+		unsigned tmpid=0;
+		for(unsigned i=0;i!=nreplica;++i)
+		{
+			if(i==rctid)
+				fb[i]=-fb1;
+			else
+				fb[i]=init_coe[tmpid++]-fb1;
+		}
+		
 		parm_bias.set_value(init_coe);
 	}
 #endif
@@ -798,46 +889,31 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 		orbfb.link(*this);
 		orbfb.open(rbfb_file);
 	}
-	
-	parse("POTDIS_FILE",potdis_file);
-	if(potdis_file.size()>0)
-	{
-		potdis_output=true;
-		opotdis.link(*this);
-		opotdis.open(potdis_file);
-		parse("POTDIS_MIN",pot_min);
-		parse("POTDIS_MAX",pot_max);
-		parse("POTDIS_BIN",pot_bin);
-		parse("POTDIS_STEP",potdis_step);
-		potdis_update=update_step;
-		parse("POTDIS_UPDATE",potdis_update);
-		potdis_num=ceil((pot_max-pot_min)/pot_bin);
-		pot_dis.assign(potdis_num,0);
-	}
 
 	parse("ITERATE_LIMIT",iter_limit);
 	
-	rctid=find_rw_id(sim_temp,sim_dtl,sim_dth);
 	fb0=find_rw_fb(rctid,sim_dtl,sim_dth);
 	rct=calc_rct(beta0,fb0,fb_ratio0);
 	
 	addComponent("rbias"); componentIsNotPeriodic("rbias");
 	valueRBias=getPntrToComponent("rbias");
-	//~ addComponent("energy"); componentIsNotPeriodic("energy");
-	//~ valueEnergy=getPntrToComponent("energy");
-	//~ addComponent("rct"); componentIsNotPeriodic("rct");
-	//~ valueRct=getPntrToComponent("rct");
-	//~ valueRct->set(rct);
 	setRctComponent("rct");
 	setRct(rct);
 	//~ addComponent("force"); componentIsNotPeriodic("force");
 	//~ valueForce=getPntrToComponent("force");
 	addComponent("energy"); componentIsNotPeriodic("energy");
 	valuePot=getPntrToComponent("energy");
-	addComponent("eff_ener"); componentIsNotPeriodic("eff_ener");
-	valueEffEner=getPntrToComponent("eff_ener");
-	addComponent("eff_temp"); componentIsNotPeriodic("eff_temp");
-	valueEffTemp=getPntrToComponent("eff_temp");
+	addComponent("Ueff"); componentIsNotPeriodic("Ueff");
+	valueUeff=getPntrToComponent("Ueff");
+	addComponent("Teff"); componentIsNotPeriodic("Teff");
+	valueTeff=getPntrToComponent("Teff");
+	
+#ifdef __PLUMED_HAS_DYNET
+	addComponent("wloss"); componentIsNotPeriodic("wloss");
+	valueLwgan=getPntrToComponent("wloss");
+	addComponent("bloss"); componentIsNotPeriodic("bloss");
+	valueLbias=getPntrToComponent("bloss");
+#endif
 
 	parseVector("RW_TEMP",rw_temp);
 
@@ -975,30 +1051,17 @@ ITS_Bias::ITS_Bias(const ActionOptions& ao):
 			log.printf("   with walker number: %d\n",multi_sim_comm.Get_rank());
 			log.printf("\n");
 		}
+#ifdef __PLUMED_HAS_DYNET
 		if(use_talits)
 		{
 			log.printf("  Using targeted adversarial learning method to iterate the fb value\n");
-			if(!only_1st)
-			{
-				log.printf("    with calculation of Hessian is open\n");
-				if(is_set_ratios)
-				{
-					for(unsigned i=0;i!=nreplica;++i)
-						log.printf("    %d\t%f\t%f\t%f\n",i,int_ratios[i],energy_mean[i],energy_dev[i]);
-				}
-				else
-				{
-					for(unsigned i=0;i!=nreplica;++i)
-						log.printf("    %d\t%f\t%f\t%f\n",i,int_temps[i],energy_mean[i],energy_dev[i]);
-				}
-				log.printf("    with energy integration range: from %f to %f\n",ener_min,ener_max);
-				log.printf("    with integrative accuracy: %f\n",dU);
-				log.printf("    with integrative complete: %f%\n",dvp2_complete*100);
-				if(dvp2_complete<0.95)
-					log.printf("    Warning! The computational complete of 2nd order derivative is low!");
-			}
+			if(targetdis_file.size()>0)
+				log.printf("  with target distribution of effective temperatures read from file: %s\n",targetdis_file.c_str());
+			for(unsigned i=0;i!=ntarget;++i)
+				log.printf("    %d. %f K with %f\n",int(i),temps_target[i],temps_dis[i]);
 			log.printf("\n");
 		}
+#endif
 		if(!is_const)
 		{
 			log.printf("  Using ITS update\n");
@@ -1124,42 +1187,17 @@ void ITS_Bias::calculate()
 		setOutputForce(0,bias_force);
 
 	valuePot->set(shift_pot);
-	valueEffEner->set(eff_energy);
-	valueEffTemp->set(eff_temp);
-	//~ valueForce->set(eff_factor);
+	valueUeff->set(eff_energy);
+	valueTeff->set(eff_temp);
 	
 #ifdef __PLUMED_HAS_DYNET
 	if(use_talits)
 	{
-		sampled_temps.push_back(eff_temp);
-		sampled_effenergy.push_back(eff_energy);
+		temps_sample.push_back(eff_temp);
+		//~ temps_sample.push_back(cv_energy);
+		energy_sample.push_back(input_energy);
 	}
 #endif
-
-	if(potdis_output)
-	{
-		if(step%potdis_step==0 && energy<pot_max && energy>pot_min)
-		{
-			unsigned id=floor((energy-pot_min)/pot_bin);
-			++pot_dis[id];
-		}
-		if(step%potdis_update==0)
-		{
-			if(use_mw)
-				multi_sim_comm.Sum(pot_dis);
-			opotdis.rewind();
-			opotdis.addConstantField("STEP").printField("STEP",int(step));
-			opotdis.addConstantField("BOLTZMANN_CONSTANT").printField("BOLTZMANN_CONSTANT",kB);
-			for(unsigned i=0;i!=potdis_num;++i)
-			{
-				double pot=pot_min+i*pot_bin;
-				opotdis.printField("energy",pot);
-				opotdis.printField("count",int(pot_dis[i]));
-				opotdis.printField();
-			}
-			opotdis.flush();
-		}
-	}
 
 	if(!equiv_temp)
 	{
@@ -1261,86 +1299,13 @@ void ITS_Bias::calculate()
 			if(auto_peshift&&-1.0*min_ener>peshift)
 				change_peshift(-1.0*min_ener);
 
+			fb_iteration();
+			
 #ifdef __PLUMED_HAS_DYNET
 			if(use_talits)
 			{
-				if(use_mw)
-				{
-					if(comm.Get_rank()==0)
-						multi_sim_comm.Sum(counts);
-					comm.Bcast(counts,0);
-
-					std::vector<float> all_sampled_temps;
-					std::vector<float> all_sampled_effenergy;
-					
-					all_sampled_temps.resize(nw*update_steps,0);
-					all_sampled_effenergy.resize(nw*update_steps,0,0);
-					
-					if(comm.Get_rank()==0)
-					{
-						multi_sim_comm.Allgather(sampled_temps,all_sampled_temps);
-						multi_sim_comm.Allgather(sampled_effenergy,all_sampled_effenergy);
-					}
-					comm.Bcast(all_sampled_temps,0);
-					comm.Bcast(all_sampled_effenergy,0);
-
-					if(comm.Get_rank()==0)
-					{
-						if(multi_sim_comm.Get_rank()==0)
-						{
-							wloss=update_wgan(all_sampled_temps,vec_fw);
-							bloss=update_bias(all_sampled_effenergy,vec_fw);
-							vec_fw.resize(0);
-							new_coe=as_vector(*parm_bias.values());
-							params_wgan=nn_wgan.get_parameters();
-						}
-						multi_sim_comm.Barrier();
-						multi_sim_comm.Bcast(wloss,0);
-						multi_sim_comm.Bcast(bloss,0);
-						multi_sim_comm.Bcast(new_coe,0);
-						multi_sim_comm.Bcast(params_wgan,0);
-					}
-					comm.Barrier();
-					comm.Bcast(wloss,0);
-					comm.Bcast(bloss,0);
-					comm.Bcast(new_coe,0);
-					comm.Bcast(params_wgan,0);
-				}
-				else
-				{
-					if(comm.Get_rank()==0)
-					{
-						wloss=update_wgan(sampled_temps,vec_fw);
-						bloss=update_bias(sampled_effenergy,vec_fw);
-						vec_fw.resize(0);
-						new_coe=as_vector(*parm_bias.values());
-						params_wgan=nn_wgan.get_parameters();
-					}
-					comm.Barrier();
-					comm.Bcast(wloss,0);
-					comm.Bcast(bloss,0);
-					comm.Bcast(new_coe,0);
-					comm.Bcast(params_wgan,0);
-				}
-				parm_bias.set_value(new_coe);
-				nn_wgan.set_parameters(params_wgan);
-				
-				valueLwgan->set(wloss);
-				valueLbias->set(bloss);
-				
-				fb[0]=0;
-				for(unsigned i=0;i!=nreplica-1;++i)
-					fb[i+1]=new_coe[i];
-				
-				sampled_temps.resize(0);
-				sampled_effenergy.resize(0);
-				counts=0;
-			}
-			else
-			{
-#endif
-				fb_iteration();
-#ifdef __PLUMED_HAS_DYNET
+				temps_sample.resize(0);
+				energy_sample.resize(0);
 			}
 #endif
 			
@@ -1504,9 +1469,6 @@ void ITS_Bias::fb_iteration()
 			partition[i]=rbzb[i];
 		partition_initial=true;
 	}
-
-	
-	
 	
 	// ratio[k]=log[m_k(t)]
 	std::vector<double> ratio;
@@ -1607,6 +1569,102 @@ void ITS_Bias::fb_iteration()
 	}
 	if(is_nan)
 		plumed_merror("FB value become NaN. See debug file or \"error.data\" file for detailed information.");
+		
+#ifdef __PLUMED_HAS_DYNET
+	if(use_talits)
+	{
+		std::vector<float> new_coe;
+		float fb_sim=fb[rctid];
+		for(unsigned i=0;i!=nreplica;++i)
+		{
+			if(i!=rctid)
+				new_coe.push_back(fb[i]-fb_sim);
+		}
+		parm_bias.set_value(new_coe);
+
+		double wloss=0;
+		double bloss=0;	
+		std::vector<std::vector<float>> vec_fw;
+		std::vector<float> params_wgan(nn_wgan.parameters_number(),0);
+		if(use_mw)
+		{
+			unsigned nw=1;
+			if(comm.Get_rank()==0)
+				nw=multi_sim_comm.Get_size();
+			comm.Bcast(nw,0);
+
+			std::vector<float> all_temps_sample;
+			std::vector<float> all_energy_sample;
+			
+			all_temps_sample.resize(nw*update_step,0);
+			all_energy_sample.resize(nw*update_step,0);
+			
+			if(comm.Get_rank()==0)
+			{
+				multi_sim_comm.Allgather(temps_sample,all_temps_sample);
+				multi_sim_comm.Allgather(energy_sample,all_energy_sample);
+			}
+			comm.Bcast(all_temps_sample,0);
+			comm.Bcast(all_energy_sample,0);
+
+			if(comm.Get_rank()==0)
+			{
+				if(multi_sim_comm.Get_rank()==0)
+				{
+					wloss=update_wgan(all_temps_sample,vec_fw);
+					bloss=update_bias(all_energy_sample,vec_fw);
+					vec_fw.resize(0);
+					new_coe=as_vector(*parm_bias.values());
+					params_wgan=nn_wgan.get_parameters();
+				}
+				multi_sim_comm.Barrier();
+				multi_sim_comm.Bcast(wloss,0);
+				multi_sim_comm.Bcast(bloss,0);
+				multi_sim_comm.Bcast(new_coe,0);
+				multi_sim_comm.Bcast(params_wgan,0);
+			}
+			comm.Barrier();
+			comm.Bcast(wloss,0);
+			comm.Bcast(bloss,0);
+			comm.Bcast(new_coe,0);
+			comm.Bcast(params_wgan,0);
+		}
+		else
+		{
+			if(comm.Get_rank()==0)
+			{
+				wloss=update_wgan(temps_sample,vec_fw);
+				bloss=update_bias(energy_sample,vec_fw);
+				vec_fw.resize(0);
+				new_coe=as_vector(*parm_bias.values());
+				params_wgan=nn_wgan.get_parameters();
+			}
+			comm.Barrier();
+			comm.Bcast(wloss,0);
+			comm.Bcast(bloss,0);
+			comm.Bcast(new_coe,0);
+			comm.Bcast(params_wgan,0);
+		}
+		parm_bias.set_value(new_coe);
+		nn_wgan.set_parameters(params_wgan);
+		
+		valueLwgan->set(wloss);
+		valueLbias->set(bloss);
+		
+		float fb1=new_coe[0];
+		if(rctid==0)
+			fb1=0;
+		
+		unsigned tmpid=0;
+		for(unsigned i=0;i!=nreplica;++i)
+		{
+			if(i==rctid)
+				fb[i]=-fb1;
+			else
+				fb[i]=new_coe[tmpid++]-fb1;
+		}
+	}
+#endif
 }
 
 void ITS_Bias::output_fb()
@@ -1871,9 +1929,6 @@ unsigned ITS_Bias::read_fb_file(const std::string& fname,double& _kB,double& _pe
 		else
 			break;
 
-		bool read_mean=false;
-		bool read_dev=false;
-
 		if(!is_const)
 		{
 			if(ifb.FieldExist("norm_value"))
@@ -1961,16 +2016,6 @@ unsigned ITS_Bias::read_fb_file(const std::string& fname,double& _kB,double& _pe
 	{
 		double rescale=kB/_kB;
 		peshift*=rescale;
-		if(!only_1st)
-		{
-			ener_max*=rescale;
-			ener_min*=rescale;
-			for(unsigned i=0;i!=nreplica;++i)
-			{
-				energy_mean[i]*=rescale;
-				energy_dev[i]*=rescale;
-			}
-		}
 	}
 	ifb.close();
 	return read_count;
@@ -2044,32 +2089,34 @@ void ITS_Bias::output_bias()
 #ifdef __PLUMED_HAS_DYNET
 
 // training the parameter of WGAN
-float ITS_Bias::update_wgan(const std::vector<float>& all_sampled_temps,std::vector<std::vector<float>>& vec_fw)
+float ITS_Bias::update_wgan(const std::vector<float>& all_temps_sample,std::vector<std::vector<float>>& vec_fw)
 {
 	ComputationGraph cg;
 	Dim xs_dim({1},batch_size);
-	Dim xt_dim({1},nreplica);
+	Dim xt_dim({1},ntarget);
 
-	std::vector<float> sampled_batch(batch_size);
-	Expression x_sample=input(cg,xs_dim,&sampled_batch);
-	Expression x_target=input(cg,xt_dim,&int_temps);
+	std::vector<float> batch_sample(batch_size);
+	Expression x_sample=input(cg,xs_dim,&batch_sample);
+	Expression x_target=input(cg,xt_dim,&temps_target);
+	Expression p_target=input(cg,xt_dim,&temps_dis);
 
 	Expression y_sample=nn_wgan.run(x_sample,cg);
 	Expression y_target=nn_wgan.run(x_target,cg);
+	Expression l_target=y_target*p_target;
 
 	Expression loss_sample=mean_batches(y_sample);
-	Expression loss_target=mean_batches(y_target);
+	Expression loss_target=mean_batches(l_target);
 
 	Expression loss_wgan=loss_sample-loss_target;
 	
 	double wloss=0;
 	double loss;
-	std::vector<std::vector<float>> vec_sampled_batch;
+	std::vector<std::vector<float>> vec_batch_sample;
 	for(unsigned i=0;i!=nepoch;++i)
 	{
 		for(unsigned j=0;j!=batch_size;++j)
-			sampled_batch[j]=all_sampled_temps[i*wsize+j];
-		vec_sampled_batch.push_back(sampled_batch);
+			batch_sample[j]=all_temps_sample[i*batch_size+j];
+		vec_batch_sample.push_back(batch_sample);
 		loss = as_scalar(cg.forward(loss_wgan));
 		wloss += loss;
 		cg.backward(loss_wgan);
@@ -2081,7 +2128,7 @@ float ITS_Bias::update_wgan(const std::vector<float>& all_sampled_temps,std::vec
 	
 	for(unsigned i=0;i!=nepoch;++i)
 	{
-		sampled_temps=vec_sampled_batch[i];
+		batch_sample=vec_batch_sample[i];
 		vec_fw.push_back(as_vector(cg.forward(y_sample)));
 	}
 	
@@ -2089,36 +2136,40 @@ float ITS_Bias::update_wgan(const std::vector<float>& all_sampled_temps,std::vec
 }
 
 // update the coeffients of the basis function
-float ITS_Bias::update_bias(const std::vector<float>& all_sampled_effenergy,const std::vector<std::vector<float>>& vec_fw)
+float ITS_Bias::update_bias(const std::vector<float>& all_energy_sample,const std::vector<std::vector<float>>& vec_fw)
 {
 	ComputationGraph cg;
 	Expression efb = parameter(cg,parm_bias);
 	
 	Dim input_dim({1},batch_size);
-	std::vector<float> biases_batch(batch_size);
-	Expression x = input(cg,input_dim,&biases_batch);
+	Dim fw_dim({1},batch_size);
+	std::vector<float> batch_sample(batch_size);
+	Expression E = input(cg,input_dim,&batch_sample);
 	std::vector<Expression> vgE;
 	
-	for(unsigned i=1;i!=nreplica;++i)
-		vgE.push_back(-1.0*betak[i]*x);
-	Expression egE = reshape(concatenate_cols(vgE), Dim({nreplica},batch_size));
+	for(unsigned i=0;i!=nreplica;++i)
+	{
+		if(i!=rctid)
+			vgE.push_back(-1.0*betak[i]*E);
+	}
+	Expression egE = reshape(concatenate_cols(vgE), Dim({nreplica-1},batch_size));
 	Expression egf = efb + egE;
 	Expression lsegf = logsumexp_dim(egf,0);
-	Expression egf0 = -1.0*betak[0]*x;
+	Expression egf0 = -1.0*betak[rctid]*E;
 	Expression ueff = -1.0*logsumexp({egf0,lsegf});
-
-	Expression loss_bias = fw * ueff;
-	Expression loss_mean = mean_batches(loss_bias);
 	
 	std::vector<float> fw_batch;
 	Expression fw = input(cg,fw_dim,&fw_batch);
+
+	Expression loss_ueff = fw * ( ueff - beta0 * E);
+	Expression loss_mean = mean_batches(loss_ueff);
 
 	double bloss=0;
 	for(unsigned i=0;i!=nepoch;++i)
 	{
 		fw_batch=vec_fw[i];
 		for(unsigned j=0;j!=batch_size;++j)
-			biases_batch[j]=all_sampled_effenergy[i*batch_size+j];
+			batch_sample[j]=all_energy_sample[i*batch_size+j];
 		bloss += as_scalar(cg.forward(loss_mean));
 		cg.backward(loss_mean);
 		train_bias->update();
