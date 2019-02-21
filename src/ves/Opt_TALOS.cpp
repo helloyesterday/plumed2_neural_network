@@ -63,10 +63,12 @@ private:
 	bool is_debug;
 	bool opt_const;
 	bool read_targetdis;
+	bool opt_rc;
 	
 	unsigned random_seed;
 	
 	unsigned narg;
+	unsigned target_dim;
 	unsigned nbiases;
 	unsigned tot_basis;
 	unsigned ntarget;
@@ -78,6 +80,11 @@ private:
 	unsigned nw;
 	unsigned iter_time;
 	unsigned wgan_output;
+	unsigned nrcarg;
+	unsigned rc_stride;
+	unsigned rc_dist_stride;
+	
+	const long double PI=3.14159265358979323846264338327950288419716939937510582;
 	
 	double kB;
 	double kBT;
@@ -102,8 +109,21 @@ private:
 	std::vector<unsigned> grid_bins;
 	std::vector<float> grid_space;
 
-	std::vector<float> input_arg;
+	std::vector<float> input_rc;
 	std::vector<float> input_bias;
+	std::vector<float> p_rc_sample1;
+	std::vector<float> p_rc_sample2;
+	std::vector<float> rc_arg_sample;
+	
+	std::vector<float> ll1;
+	std::vector<float> ul1;
+	std::vector<float> ll2;
+	std::vector<float> ul2;
+	std::vector<float> center1;
+	std::vector<float> center2;
+	std::vector<float> tsp;
+	std::vector<float> state_boundary;
+	std::vector<float> ps_boundary;
 	
 	std::vector<dynet::real> input_target;
 	std::vector<dynet::real> target_dis;
@@ -114,9 +134,13 @@ private:
 	
 	std::string targetdis_file;
 	std::string wgan_file;
+	std::string rc_file;
+	std::string rc_dist_file;
 	std::string debug_file;
 	
 	IFile itarget;
+	OFile orc;
+	OFile orcdist;
 	OFile odebug;
 	
 	std::vector<float> lr_bias;
@@ -131,6 +155,8 @@ private:
 	Trainer *train_wgan;
 	
 	Parameter parm_bias;
+	Parameter parm_rcw;
+	Parameter parm_rcb;
 	MLP nn_wgan;
 	
 	Value* valueLwgan;
@@ -138,6 +164,8 @@ private:
 	
 	float update_wgan(const std::vector<float>&,std::vector<std::vector<float>>&);
 	float update_bias(const std::vector<float>&,const std::vector<std::vector<float>>&);
+	float update_bias_and_rc(const std::vector<float>&,const std::vector<float>&,
+		const std::vector<float>&,const std::vector<float>&,const std::vector<std::vector<float>>&);
 
 public:
 	static void registerKeywords(Keywords&);
@@ -145,6 +173,7 @@ public:
 	~Opt_TALOS();
 	void update();
 	void coeffsUpdate(const unsigned int c_id = 0){}
+	void update_rc_target();
 	template<class T>
 	bool parseVectorAuto(const std::string&, std::vector<T>&,unsigned);
 	template<class T>
@@ -180,7 +209,21 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   keys.add("compulsory","CLIP_RIGHT","0.01","the right value to clip");
   keys.add("compulsory","WGAN_FILE","wgan.data","file name of the coefficients of W-GAN");
   keys.add("compulsory","WGAN_OUTPUT","1","the frequency (how many period of update) to out the coefficients of W-GAN");
+  keys.addFlag("OPT_RC",false,"optimize reaction coordinate during the iteration");
+  //~ keys.add("optional","TARGET_DIM","the dimension of the target order parameters");
+  keys.add("optional","RC_INITAL_COEFFS","the initial coefficients of the target order parameters");
   keys.add("optional","TARGETDIST_FILE","read target distribution from file");
+  keys.add("optional","OPT_TARGET_FILE","the file to output the distribution optimized reaction coordinate");
+  keys.add("optional","OPT_TARGET_STRIDE","the frequency to output the distribution optimized reaction coordinate");
+  keys.add("optional","OPT_RC_FILE","the file to output the parameters of optimized reaction coordinate");
+  keys.add("optional","OPT_RC_STRIDE","the frequency to output the parameters of optimized reaction coordinate");
+  keys.add("optional","STATE1_LL","the lower bounds of state 1");
+  keys.add("optional","STATE1_UL","the upper bounds of state 1");
+  keys.add("optional","STATE2_LL","the upper bounds of state 2");
+  keys.add("optional","STATE2_UL","the upper bounds of state 2");
+  keys.add("optional","STATE1_CENTER","the center of state 1 used to build target distribution");
+  keys.add("optional","STATE2_CENTER","the center of state 2 used to build target distribution");
+  keys.add("optional","TS_CENTER","the center of transiiton state used to build target distribution");
   keys.add("optional","GRID_MIN","the lower bounds used to calculate the target distribution");
   keys.add("optional","GRID_MAX","the upper bounds used to calculate the target distribution");
   keys.add("optional","GRID_BINS","the number of bins used to set the target distribution");
@@ -200,6 +243,13 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
 Opt_TALOS::~Opt_TALOS() {
 	delete train_wgan;
 	delete train_bias;
+	if(opt_rc)
+	{
+		if(rc_file.size()>0)
+			orc.close();
+		if(rc_dist_file.size()>0)
+			orcdist.close();
+	}
 	if(is_debug)
 		odebug.close();
 }
@@ -216,6 +266,8 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
   counts(0),
   nw(1),
   iter_time(0),
+  rc_stride(1),
+  rc_dist_stride(1),
   args_periodic(getNumberOfArguments(),false),
   grid_space(getNumberOfArguments()),
   train_bias(NULL),
@@ -347,17 +399,80 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	train_bias->clip_threshold = clip_threshold_bias;
 	train_wgan->clip_threshold = clip_threshold_wgan;
 	
-	unsigned input_dim=narg;
+	parseFlag("OPT_RC",opt_rc);
+	
+	if(opt_rc)
+		target_dim=1;
+	else
+		target_dim=narg;
+
+	unsigned ldim=target_dim;
 	for(unsigned i=0;i!=nhidden;++i)
 	{
-		nn_wgan.append(pc_wgan,Layer(input_dim,hidden_layers[i],activation_function(hidden_active[i]),0));
-		input_dim=hidden_layers[i];
+		nn_wgan.append(pc_wgan,Layer(ldim,hidden_layers[i],activation_function(hidden_active[i]),0));
+		ldim=hidden_layers[i];
 	}
-	nn_wgan.append(pc_wgan,Layer(input_dim,1,LINEAR,0));
+	nn_wgan.append(pc_wgan,Layer(ldim,1,LINEAR,0));
 	
 	parm_bias=pc_bias.add_parameters({1,tot_basis});
 	
+	if(opt_rc)
+	{
+		parm_rcw=pc_bias.add_parameters({target_dim,narg});
+		parm_rcb=pc_bias.add_parameters({target_dim});
+		
+		parse("OPT_TARGET_FILE",rc_dist_file);
+		parse("OPT_TARGET_STRIDE",rc_dist_stride);
+		
+		if(rc_dist_file.size()>0)
+		{
+			orcdist.link(*this);
+			orcdist.open(rc_dist_file.c_str());
+		}
+		
+		rc_file="rc.data";
+		parse("OPT_RC_FILE",rc_file);
+		parse("OPT_RC_STRIDE",rc_stride);
+		
+		if(rc_file.size()>0)
+		{
+			orc.link(*this);
+			orc.open(rc_file.c_str());
+		}
+		
+		plumed_massert(narg>1,"if you want to optimize the reaction coordinate, the number of arguments must larger than 1");
+		parseVector("STATE1_LL",ll1);
+		plumed_massert(ll1.size()==narg,"the number of STATE1_LL must equal to the number of arguments");
+		state_boundary.insert(state_boundary.end(),ll1.begin(),ll1.end());
+		
+		parseVector("STATE1_UL",ul1);
+		plumed_massert(ul1.size()==narg,"the number of STATE1_UL must equal to the number of arguments");
+		state_boundary.insert(state_boundary.end(),ul1.begin(),ul1.end());
+		
+		parseVector("STATE2_LL",ll2);
+		plumed_massert(ll2.size()==narg,"the number of STATE2_LL must equal to the number of arguments");
+		state_boundary.insert(state_boundary.end(),ll2.begin(),ll2.end());
+		
+		parseVector("STATE2_UL",ul2);
+		plumed_massert(ul2.size()==narg,"the number of STATE2_UL must equal to the number of arguments");
+		state_boundary.insert(state_boundary.end(),ul2.begin(),ul2.end());
+		
+		parseVector("STATE1_CENTER",center1);
+		plumed_massert(center1.size()==narg,"the number of STATE1_CENTER must equal to the number of arguments");
+		ps_boundary.insert(ps_boundary.end(),center1.begin(),center1.end());
+		
+		parseVector("STATE2_CENTER",center2);
+		plumed_massert(center2.size()==narg,"the number of STATE2_CENTER must equal to the number of arguments");
+		ps_boundary.insert(ps_boundary.end(),center2.begin(),center2.end());
+		
+		parseVector("TS_CENTER",tsp);
+		plumed_massert(tsp.size()==narg,"the number of TS_CENTER must equal to the number of arguments");
+		ps_boundary.insert(ps_boundary.end(),tsp.begin(),tsp.end());
+	}
+	
 	init_coe.resize(tot_basis);
+	std::vector<float> init_rcw(narg);
+	std::vector<float> init_rcb(1);
 	
 	std::vector<float> params_wgan(nn_wgan.parameters_number());
 	
@@ -369,13 +484,28 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 			{
 				init_coe=as_vector(*parm_bias.values());
 				params_wgan=nn_wgan.get_parameters();
+				if(opt_rc)
+				{
+					init_rcw=as_vector(*parm_rcw.values());
+					init_rcb=as_vector(*parm_rcb.values());
+				}
 			}
 			multi_sim_comm.Barrier();
 			multi_sim_comm.Bcast(init_coe,0);
 			multi_sim_comm.Bcast(params_wgan,0);
+			if(opt_rc)
+			{
+				multi_sim_comm.Bcast(init_rcw,0);
+				multi_sim_comm.Bcast(init_rcb,0);
+			}
 		}
 		comm.Bcast(init_coe,0);
 		comm.Bcast(params_wgan,0);
+		if(opt_rc)
+		{
+			comm.Bcast(init_rcw,0);
+			comm.Bcast(init_rcb,0);
+		}
 	}
 	else
 	{
@@ -383,14 +513,58 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		{
 			init_coe=as_vector(*parm_bias.values());
 			params_wgan=nn_wgan.get_parameters();
+			if(opt_rc)
+			{
+				init_rcw=as_vector(*parm_rcw.values());
+				init_rcb=as_vector(*parm_rcb.values());
+			}
 		}
 		comm.Barrier();
 		comm.Bcast(init_coe,0);
 		comm.Bcast(params_wgan,0);
+		if(opt_rc)
+		{
+			comm.Bcast(init_rcw,0);
+			comm.Bcast(init_rcb,0);
+		}
 	}
+	
+	parseVector("RC_INITAL_COEFFS",init_rcw);
 	
 	parm_bias.set_value(init_coe);
 	nn_wgan.set_parameters(params_wgan);
+	if(opt_rc)
+	{
+		std::vector<float> input_coe;
+		parseVector("RC_INITAL_COEFFS",input_coe);
+		
+		if(input_coe.size()>0)
+		{
+			if(input_coe.size()==narg)
+				init_rcw=input_coe;
+			else if(input_coe.size()==narg+1)
+			{
+				init_rcb={input_coe.back()};
+				input_coe.pop_back();
+				init_rcw=input_coe;
+			}
+			else
+				plumed_merror("the number of RC_INITAL_COEFFS must be equal to or larger than the arguments number");
+		}
+		
+		parm_rcw.set_value(init_rcw);
+		parm_rcb.set_value(init_rcb);
+		
+		orc.printField("time",getTime());
+		for(unsigned i=0;i!=init_rcw.size();++i)
+		{
+			std::string lab="W"+std::to_string(i);
+			orc.printField(lab,init_rcw[i]);
+		}
+		orc.printField("b",init_rcb[0]);
+		orc.printField();
+		orc.flush();
+	}
 
 	unsigned id=0;
 	for(unsigned i=0;i!=nbiases;++i)
@@ -425,7 +599,8 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		is_debug=true;
 		odebug.link(*this);
 		odebug.open(debug_file);
-		odebug.addConstantField("ITERATION");
+		odebug.fmtField(" %f");
+		//~ odebug.addConstantField("ITERATION");
 	}
 	
 	parse("EPOCH_NUM",nepoch);
@@ -477,13 +652,20 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	}
 	else
 	{
-		parseVectorAuto("GRID_MIN",grid_min,narg);
-		parseVectorAuto("GRID_MAX",grid_max,narg);
-		parseVectorAuto("GRID_BINS",grid_bins,narg);
-		parseVectorAuto("ARG_PERIODIC",arg_perd_str,narg,std::string("false"));
+		parseVectorAuto("GRID_MIN",grid_min,target_dim);
+		parseVectorAuto("GRID_MAX",grid_max,target_dim);
+		parseVectorAuto("GRID_BINS",grid_bins,target_dim,unsigned(500));
+		parseVectorAuto("ARG_PERIODIC",arg_perd_str,target_dim,std::string("false"));
 		
-		for(unsigned i=0;i!=narg;++i)
+		for(unsigned i=0;i!=target_dim;++i)
 		{
+			if(arg_perd_str[i]=="True"||arg_perd_str[i]=="true"||arg_perd_str[i]=="TRUE")
+				args_periodic[i]=true;
+			else if(arg_perd_str[i]=="False"||arg_perd_str[i]=="false"||arg_perd_str[i]=="FALSE")
+				args_periodic[i]=false;
+			else
+				plumed_merror("Cannot understand the ARG_PERIODIC type: "+arg_perd_str[i]);
+				
 			grid_space[i]=(grid_max[i]-grid_min[i])/grid_bins[i];
 			if(!args_periodic[i])
 				++grid_bins[i];
@@ -491,16 +673,6 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		}
 	}
 	comm.Barrier();
-	
-	for(unsigned i=0;i!=narg;++i)
-	{
-		if(arg_perd_str[i]=="True"||arg_perd_str[i]=="true"||arg_perd_str[i]=="TRUE")
-			args_periodic[i]=true;
-		else if(arg_perd_str[i]=="False"||arg_perd_str[i]=="false"||arg_perd_str[i]=="FALSE")
-			args_periodic[i]=false;
-		else
-			plumed_merror("Cannot understand the ARG_PERIODIC type: "+arg_perd_str[i]);
-	}
 	
 	std::vector<std::vector<float>> target_points;
 	if(read_targetdis)
@@ -528,6 +700,19 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		comm.Barrier();
 		for(unsigned i=0;i!=ntarget;++i)
 			target_dis[i]/=(sum/ntarget);
+	}
+	else if(opt_rc)
+	{
+		target_dis.resize(ntarget);
+		update_rc_target();
+		for(unsigned i=0;i!=ntarget;++i)
+		{
+			target_points.push_back({input_target[i]});
+			orcdist.printField("RC",input_target[i]);
+			orcdist.printField("targetdist",target_dis[i]);
+			orcdist.printField();
+		}
+		orcdist.printField();
 	}
 	else
 	{
@@ -674,14 +859,75 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 
 void Opt_TALOS::update()
 {
+	bool irc1=true;
+	bool irc2=true;
+	std::vector<float> varg;
+	if(is_debug)
+		odebug.printField("time",getTime());
 	for(unsigned i=0;i!=narg;++i)
 	{
-		input_arg.push_back(getArgument(i));
+		float val=getArgument(i);
+		
+		if(opt_rc)
+		{
+			varg.push_back(val);
+			rc_arg_sample.push_back(val);
+		}
+		else
+			input_rc.push_back(val);
+		
+		if(opt_rc)
+		{
+			if(val<ll1[i]||val>ul1[i])
+				irc1=false;
+			if(val<ll2[i]||val>ul2[i])
+				irc2=false;
+		}
+		
 		if(is_debug)
 		{
-			odebug.printField("time",getTime());
 			std::string ff="ARG"+std::to_string(i);
-			odebug.printField(ff,input_arg.back());
+			odebug.printField(ff,val);
+			//~ if(opt_rc)
+			//~ {
+				//~ ff="LL1_"+std::to_string(i);
+				//~ odebug.printField(ff,ll1[i]);
+				//~ ff="UL1_"+std::to_string(i);
+				//~ odebug.printField(ff,ul1[i]);
+				//~ ff="LL2_"+std::to_string(i);
+				//~ odebug.printField(ff,ll2[i]);
+				//~ ff="UL2_"+std::to_string(i);
+				//~ odebug.printField(ff,ul2[i]);
+			//~ }
+		}
+	}
+	if(opt_rc)
+	{
+		ComputationGraph cg;
+		Expression W = parameter(cg,parm_rcw);
+		Expression b = parameter(cg,parm_rcb);
+		Expression x = input(cg,{narg},&varg);
+		Expression y_pred = tanh( W * x + b);
+		
+		std::vector<float> vrc=as_vector(cg.forward(y_pred));
+		
+		input_rc.push_back(vrc[0]);
+		
+		if(irc1)
+			p_rc_sample1.push_back(1);
+		else
+			p_rc_sample1.push_back(0);
+			
+		if(irc2)
+			p_rc_sample2.push_back(1);
+		else
+			p_rc_sample2.push_back(0);
+			
+		if(is_debug)
+		{
+			odebug.printField("RC",vrc[0]);
+			odebug.printField("ST1",p_rc_sample1.back());
+			odebug.printField("ST2",p_rc_sample2.back());
 		}
 	}
 	
@@ -698,65 +944,66 @@ void Opt_TALOS::update()
 		for(unsigned j=begid;j!=bsvalues.size();++j)
 		{
 			input_bias.push_back(bsvalues[j]);
-			if(is_debug)
-				debug_vec.push_back(bsvalues[j]);
+			//~ if(is_debug)
+				//~ debug_vec.push_back(bsvalues[j]);
 		}
 	}
 	
 	if(is_debug)
 	{
-		std::vector<float> pred(tot_basis,0);
-		std::vector<float> ww(tot_basis,0);
-		std::vector<float> xx(tot_basis,0);
-		if(comm.Get_rank()==0)
-		{
-			ComputationGraph cg;
-			Expression W = parameter(cg,parm_bias);
-			Expression x = input(cg,{tot_basis},&debug_vec);
-			Expression y_pred = W * x;
+		//~ std::vector<float> pred(tot_basis,0);
+		//~ std::vector<float> ww(tot_basis,0);
+		//~ std::vector<float> xx(tot_basis,0);
+		//~ if(comm.Get_rank()==0)
+		//~ {
+			//~ ComputationGraph cg;
+			//~ Expression W = parameter(cg,parm_bias);
+			//~ Expression x = input(cg,{tot_basis},&debug_vec);
+			//~ Expression y_pred = W * x;
 			
-			if(counts==0)
-			{
-				ww=as_vector(W.value());
-				xx=as_vector(x.value());
-			}
-			pred=as_vector(cg.forward(y_pred));
-		}
-		comm.Barrier();
-		comm.Bcast(pred,0);
-		if(counts==0)
-		{
-			comm.Bcast(ww,0);
-			comm.Bcast(xx,0);
-		}
+			//~ if(counts==0)
+			//~ {
+				//~ ww=as_vector(W.value());
+				//~ xx=as_vector(x.value());
+			//~ }
+			//~ pred=as_vector(cg.forward(y_pred));
+		//~ }
+		//~ comm.Barrier();
+		//~ comm.Bcast(pred,0);
+		//~ if(counts==0)
+		//~ {
+			//~ comm.Bcast(ww,0);
+			//~ comm.Bcast(xx,0);
+		//~ }
 		
-		for(unsigned i=0;i!=pred.size();++i)
-		{
-			std::string ff="PRED"+std::to_string(i);
-			odebug.printField(ff,pred[i]);
-		}
+		//~ for(unsigned i=0;i!=pred.size();++i)
+		//~ {
+			//~ std::string ff="PRED"+std::to_string(i);
+			//~ odebug.printField(ff,pred[i]);
+		//~ }
+		//~ 
 		odebug.printField();
 		odebug.flush();
 		
-		if(counts==0)
-		{
-			odebug.printField("time",getTime());
-			for(unsigned i=0;i!=ww.size();++i)
-			{
-				std::string ff="W"+std::to_string(i);
-				odebug.printField(ff,ww[i]);
-			}
-			odebug.printField();
-			
-			odebug.printField("time",getTime());
-			for(unsigned i=0;i!=xx.size();++i)
-			{
-				std::string ff="x"+std::to_string(i);
-				odebug.printField(ff,xx[i]);
-			}
-			odebug.printField();
-			odebug.flush();
-		}
+		//~ if(counts==0)
+		//~ {
+			//~ odebug.printField("time",getTime());
+			//~ for(unsigned i=0;i!=ww.size();++i)
+			//~ {
+				//~ std::string ff="W"+std::to_string(i);
+				//~ odebug.printField(ff,ww[i]);
+			//~ }
+			//~ odebug.printField();
+			//~ 
+			//~ odebug.printField("time",getTime());
+			//~ for(unsigned i=0;i!=xx.size();++i)
+			//~ {
+				//~ std::string ff="x"+std::to_string(i);
+				//~ odebug.printField(ff,xx[i]);
+			//~ }
+			//~ odebug.printField();
+			//~ odebug.flush();
+		//~ }
 	}
 
 	++counts;
@@ -764,8 +1011,8 @@ void Opt_TALOS::update()
 	
 	if(step%update_steps==0&&counts>0)
 	{
-		if(input_arg.size()!=narg*update_steps)
-			plumed_merror("ERROR! The size of the input_arg mismatch: "+std::to_string(input_arg.size()));
+		if(input_rc.size()!=target_dim*update_steps)
+			plumed_merror("ERROR! The size of the input_rc mismatch: "+std::to_string(input_rc.size()));
 		if(input_bias.size()!=tot_basis*update_steps)
 			plumed_merror("ERROR! The size of the input_bias mismatch: "+std::to_string(input_bias.size()));
 
@@ -774,74 +1021,174 @@ void Opt_TALOS::update()
 		std::vector<float> new_coe(tot_basis,0);
 		std::vector<std::vector<float>> vec_fw;
 		std::vector<float> params_wgan(nn_wgan.parameters_number(),0);
+		
+		std::vector<float> new_rcw;
+		std::vector<float> new_rcb;
+		if(opt_rc)
+		{
+			new_rcw.resize(target_dim*narg);
+			new_rcb.resize(target_dim);
+		}
+		
 		if(useMultipleWalkers())
 		{
 			if(comm.Get_rank()==0)
 				multi_sim_comm.Sum(counts);
 			comm.Bcast(counts,0);
 
-			std::vector<float> all_input_arg;
+			std::vector<float> all_input_rc;
 			std::vector<float> all_input_bias;
 			
-			all_input_arg.resize(nw*narg*update_steps,0);
+			all_input_rc.resize(nw*target_dim*update_steps,0);
 			all_input_bias.resize(nw*tot_basis*update_steps,0);
+			
+			std::vector<float> all_rc_arg_sample;
+			std::vector<float> all_p_rc_sample1;
+			std::vector<float> all_p_rc_sample2;
+			
+			if(opt_rc)
+			{
+				all_rc_arg_sample.resize(nw*narg*update_steps,0);
+				all_p_rc_sample1.resize(nw*update_steps,0);
+				all_p_rc_sample2.resize(nw*update_steps,0);
+			}
 			
 			if(comm.Get_rank()==0)
 			{
-				multi_sim_comm.Allgather(input_arg,all_input_arg);
+				multi_sim_comm.Allgather(input_rc,all_input_rc);
 				multi_sim_comm.Allgather(input_bias,all_input_bias);
+				if(opt_rc)
+				{
+					multi_sim_comm.Allgather(rc_arg_sample,all_rc_arg_sample);
+					multi_sim_comm.Allgather(p_rc_sample1,all_p_rc_sample1);
+					multi_sim_comm.Allgather(p_rc_sample2,all_p_rc_sample2);
+				}
 			}
-			comm.Bcast(all_input_arg,0);
+			comm.Bcast(all_input_rc,0);
 			comm.Bcast(all_input_bias,0);
+			if(opt_rc)
+			{
+				comm.Bcast(all_rc_arg_sample,0);
+				comm.Bcast(all_p_rc_sample1,0);
+				comm.Bcast(all_p_rc_sample2,0);
+			}
 
 			if(comm.Get_rank()==0)
 			{
 				if(multi_sim_comm.Get_rank()==0)
 				{
-					wloss=update_wgan(all_input_arg,vec_fw);
-					bloss=update_bias(all_input_bias,vec_fw);
+					wloss=update_wgan(all_input_rc,vec_fw);
+					if(opt_rc)
+						bloss=update_bias_and_rc(all_input_bias,
+							all_rc_arg_sample,all_p_rc_sample1,
+							all_p_rc_sample2,vec_fw);
+					else
+						bloss=update_bias(all_input_bias,vec_fw);
 					vec_fw.resize(0);
 					new_coe=as_vector(*parm_bias.values());
 					params_wgan=nn_wgan.get_parameters();
+					if(opt_rc)
+					{
+						new_rcw=as_vector(*parm_rcw.values());
+						new_rcb=as_vector(*parm_rcb.values());
+					}
 				}
 				multi_sim_comm.Barrier();
 				multi_sim_comm.Bcast(wloss,0);
 				multi_sim_comm.Bcast(bloss,0);
 				multi_sim_comm.Bcast(new_coe,0);
 				multi_sim_comm.Bcast(params_wgan,0);
+				if(opt_rc)
+				{
+					multi_sim_comm.Bcast(new_rcw,0);
+					multi_sim_comm.Bcast(new_rcb,0);
+				}
 			}
 			comm.Barrier();
 			comm.Bcast(wloss,0);
 			comm.Bcast(bloss,0);
 			comm.Bcast(new_coe,0);
 			comm.Bcast(params_wgan,0);
+			if(opt_rc)
+			{
+				comm.Bcast(new_rcw,0);
+				comm.Bcast(new_rcb,0);
+			}
 		}
 		else
 		{
 			if(comm.Get_rank()==0)
 			{
-				wloss=update_wgan(input_arg,vec_fw);
-				bloss=update_bias(input_bias,vec_fw);
+				wloss=update_wgan(input_rc,vec_fw);
+				if(opt_rc)
+					bloss=update_bias_and_rc(input_bias,rc_arg_sample,
+						p_rc_sample1,p_rc_sample2,vec_fw);
+				else
+					bloss=update_bias(input_bias,vec_fw);
 				vec_fw.resize(0);
 				new_coe=as_vector(*parm_bias.values());
 				params_wgan=nn_wgan.get_parameters();
+				if(opt_rc)
+				{
+					new_rcw=as_vector(*parm_rcw.values());
+					new_rcb=as_vector(*parm_rcb.values());
+				}
 			}
 			comm.Barrier();
 			comm.Bcast(wloss,0);
 			comm.Bcast(bloss,0);
 			comm.Bcast(new_coe,0);
 			comm.Bcast(params_wgan,0);
+			if(opt_rc)
+			{
+				comm.Bcast(new_rcw,0);
+				comm.Bcast(new_rcb,0);
+			}
 		}
 		
 		parm_bias.set_value(new_coe);
 		nn_wgan.set_parameters(params_wgan);
+		if(opt_rc)
+		{
+			parm_rcw.set_value(new_rcw);
+			parm_rcb.set_value(new_rcb);
+			if(iter_time%rc_stride==0)
+			{
+				orc.printField("time",getTime());
+				for(unsigned i=0;i!=new_rcw.size();++i)
+				{
+					std::string lab="W"+std::to_string(i);
+					orc.printField(lab,new_rcw[i]);
+				}
+				orc.printField("b",new_rcb[0]);
+				orc.printField();
+				orc.flush();
+			}
+			update_rc_target();
+			if(iter_time%rc_dist_stride==0)
+			{
+				for(unsigned i=0;i!=ntarget;++i)
+				{
+					orcdist.printField("RC",input_target[i]);
+					orcdist.printField("targetdist",target_dis[i]);
+					orcdist.printField();
+				}
+				orcdist.printField();
+			}
+		}
 
 		valueLwgan->set(wloss);
 		valueLbias->set(bloss);
 		
-		input_arg.resize(0);
+		input_rc.resize(0);
 		input_bias.resize(0);
 		counts=0;
+		if(opt_rc)
+		{
+			rc_arg_sample.resize(0);
+			p_rc_sample1.resize(0);
+			p_rc_sample2.resize(0);
+		}
 		
 		if(comm.Get_rank()==0&&multi_sim_comm.Get_rank()==0&&iter_time%wgan_output==0)
 		{
@@ -851,24 +1198,25 @@ void Opt_TALOS::update()
 		
 		++iter_time;
 		
-		if(is_debug)
-		{
-			odebug.printField("ITERATION",int(iter_time));
-			odebug.printField("time",getTime());
-			for(unsigned i=0;i!=new_coe.size();++i)
-			{
-				odebug.printField("Coe"+std::to_string(i),new_coe[i]);
-			}
-			odebug.printField();
-			odebug.flush();
-		}
+		//~ if(is_debug)
+		//~ {
+			//~ odebug.printField("ITERATION",int(iter_time));
+			//~ odebug.printField("time",getTime());
+			//~ for(unsigned i=0;i!=new_coe.size();++i)
+			//~ {
+				//~ odebug.printField("Coe"+std::to_string(i),new_coe[i]);
+			//~ }
+			
+			//~ odebug.printField();
+			//~ odebug.flush();
+		//~ }
 
 		unsigned id=0;
 		for(unsigned i=0;i!=nbiases;++i)
 		{
 			std::vector<double> coe(basises_nums[i]);
 			for(unsigned j=0;j!=basises_nums[i];++j)
-			{		
+			{
 				if(j==0&&(!opt_const))
 					coe[j]=0;
 				else
@@ -918,16 +1266,16 @@ void Opt_TALOS::update()
 }
 
 // training the parameter of WGAN
-float Opt_TALOS::update_wgan(const std::vector<float>& all_input_arg,std::vector<std::vector<float>>& vec_fw)
+float Opt_TALOS::update_wgan(const std::vector<float>& all_input_rc,std::vector<std::vector<float>>& vec_fw)
 {
 	ComputationGraph cg;
-	Dim xs_dim({narg},batch_size);
-	Dim xt_dim({narg},ntarget);
+	Dim xs_dim({target_dim},batch_size);
+	Dim xt_dim({target_dim},ntarget);
 	Dim pt_dim({1},ntarget);
 	
 	//~ std::random_shuffle(input_target.begin(), input_target.end());
 
-	unsigned wsize=batch_size*narg;
+	unsigned wsize=batch_size*target_dim;
 	std::vector<float> input_sample(wsize);
 	Expression x_sample=input(cg,xs_dim,&input_sample);
 	Expression x_target=input(cg,xt_dim,&input_target);
@@ -949,7 +1297,7 @@ float Opt_TALOS::update_wgan(const std::vector<float>& all_input_arg,std::vector
 	for(unsigned i=0;i!=nepoch;++i)
 	{
 		for(unsigned j=0;j!=wsize;++j)
-			input_sample[j]=all_input_arg[i*wsize+j];
+			input_sample[j]=all_input_rc[i*wsize+j];
 		vec_input_sample.push_back(input_sample);
 		loss = as_scalar(cg.forward(loss_wgan));
 		wloss += loss;
@@ -1001,6 +1349,125 @@ float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std:
 	return bloss;
 }
 
+float Opt_TALOS::update_bias_and_rc(const std::vector<float>& all_input_bias,
+	const std::vector<float>& all_rc_arg_sample,
+	const std::vector<float>& all_p_rc_sample1,
+	const std::vector<float>& all_p_rc_sample2,
+	const std::vector<std::vector<float>>& vec_fw)
+{
+	ComputationGraph cg;
+	Expression W = parameter(cg,parm_bias);
+	Dim bias_dim({tot_basis},batch_size),fw_dim({1},batch_size);
+	unsigned bsize=batch_size*tot_basis;
+	std::vector<float> basis_batch(bsize);
+	Expression x = input(cg,bias_dim,&basis_batch);
+	Expression y_pred = W * x;
+	std::vector<float> fw_batch;
+	Expression fw = input(cg,fw_dim,&fw_batch);
+	
+	Expression loss_bias = beta * fw * y_pred;
+	Expression loss_mean = mean_batches(loss_bias);
+	
+	unsigned asize=batch_size*narg;
+	Dim rc_dim({narg},batch_size);
+	std::vector<float> rc_arg_batch(asize);
+	Expression x_r = input(cg,rc_dim,&rc_arg_batch);
+	
+	Dim prc_dim({target_dim},batch_size);
+	std::vector<float> p_rc1_batch(batch_size);
+	std::vector<float> p_rc2_batch(batch_size);
+	Expression p_rc1 = input(cg,prc_dim,&p_rc1_batch);
+	Expression p_rc2 = input(cg,prc_dim,&p_rc2_batch);
+	
+	Expression Wrc = parameter(cg,parm_rcw);
+	Expression brc = parameter(cg,parm_rcb);
+	
+	Expression y_rc = (tanh( Wrc * x_r + brc) + 1.0)/2;
+	Expression l_rc1 = dynet::log(y_rc) * p_rc1;
+	Expression l_rc2 = dynet::log(1.0 - y_rc) * p_rc2;
+	
+	Expression loss_rc = mean_batches(l_rc1) + mean_batches(l_rc2);
+	//~ Expression loss_rc = mean_batches(l_rc1 + l_rc2);
+	Expression loss_fin = loss_mean - loss_rc;
+	//~ Expression loss_fin = loss_mean;
+
+	double bloss=0;
+	for(unsigned i=0;i!=nepoch;++i)
+	{
+		fw_batch=vec_fw[i];
+		for(unsigned j=0;j!=batch_size;++j)
+		{
+			p_rc1_batch[j]=all_p_rc_sample1[i*batch_size+j];
+			p_rc2_batch[j]=all_p_rc_sample2[i*batch_size+j];
+		}
+		for(unsigned j=0;j!=asize;++j)
+		{
+			rc_arg_batch[j]=all_rc_arg_sample[i*asize+j];
+		}
+		
+		for(unsigned j=0;j!=bsize;++j)
+		{
+			basis_batch[j]=all_input_bias[i*bsize+j];
+		}
+		bloss += as_scalar(cg.forward(loss_fin));
+		cg.backward(loss_fin);
+		train_bias->update();
+	}
+	bloss/=nepoch;
+	
+	//~ new_coe=as_vector(W.value());
+	return bloss;
+}
+
+void Opt_TALOS::update_rc_target()
+{	
+	ComputationGraph cg;
+	Expression W = parameter(cg,parm_rcw);
+	Expression b = parameter(cg,parm_rcb);
+	Dim x_dim({narg},3);
+	Expression x = input(cg,x_dim,&ps_boundary);
+	Expression y_pred = tanh( W * x + b);
+	std::vector<float> rcp=as_vector(cg.forward(y_pred));
+	
+	if((rcp[0]-rcp[2])*(rcp[2]-rcp[1])<0)
+		plumed_merror("The point of transition state must between the two stable states: "+
+		std::to_string(rcp[0])+", "+std::to_string(rcp[1])+", "+std::to_string(rcp[2]));
+	
+	//~ float gmin=grid_min[0];
+	//~ float gmin=grid_min[0];
+	for(unsigned i=0;i!=rcp.size();++i)
+	{
+		plumed_massert(rcp[i]>grid_min[0],"the point of target must be larger than the GRID_MIN");
+		plumed_massert(rcp[i]<grid_max[0],"the point of target must be smaller than the GRID_MAX");
+	}
+	
+	float r1=rcp[0];
+	float r2=rcp[1]; 
+		
+	float sigma1=fabs(rcp[0]-rcp[2])/2;
+	float sigma2=fabs(rcp[1]-rcp[2])/2;
+	
+	float a1=1.0/(sigma1*sqrt(2.0*PI));
+	float a2=2.0/(sigma2*sqrt(2.0*PI));
+	float b1=-1.0/(2*sigma1*sigma1);
+	float b2=-1.0/(2*sigma2*sigma2);
+	
+	double sum=0;
+	for(unsigned i=0;i!=ntarget;++i)
+	{
+		float val=grid_min[0]+grid_space[0]*i;
+		input_target.push_back(val);
+		float valm1=val-r1;
+		float p1=a1*exp(b1*valm1*valm1);
+		float valm2=val-r2;
+		float p2=a2*exp(b2*valm2*valm2);
+		
+		target_dis[i]=p1+p2;
+		sum+=p1+p2;
+	}
+	for(unsigned i=0;i!=ntarget;++i)
+		target_dis[i]/=(sum/ntarget);
+}
 
 
 template<class T>
