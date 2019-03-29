@@ -1246,22 +1246,6 @@ void Opt_TALOS::update()
 				getBiasPntrs()[i]->updateReweightFactor();
 			}
 		}
-		
-		if(isBiasOutputActive() && getIterationCounter()%getBiasOutputStride()==0) {
-			writeBiasOutputFiles();
-		}
-		if(isFesOutputActive() && getIterationCounter()%getFesOutputStride()==0) {
-			writeFesOutputFiles();
-		}
-		if(isFesProjOutputActive() && getIterationCounter()%getFesProjOutputStride()==0) {
-			writeFesProjOutputFiles();
-		}
-		if(isTargetDistOutputActive() && getIterationCounter()%getTargetDistOutputStride()==0) {
-			writeTargetDistOutputFiles();
-		}
-		if(isTargetDistProjOutputActive() && getIterationCounter()%getTargetDistProjOutputStride()==0) {
-			writeTargetDistProjOutputFiles();
-		}
 	}
 }
 

@@ -126,7 +126,7 @@ private:
   std::vector<double> reweight_min_;
   std::vector<double> reweight_max_;
   double reweight_factor;
-  //~ Value* valueRct_;
+  Value* valueRct_;
   Value* valueRbias_;
   //
 private:
@@ -325,7 +325,7 @@ public:
   std::vector<std::string> getStrRWMin() const {return str_rw_min_;}
   double getReweightFactor() const {return reweight_factor;}
   void setReweightFactor(double reweight_factor_) {reweight_factor=reweight_factor_;}
-  void setValueReweightFactor(double reweight_factor_) {setRct(reweight_factor_);}
+  void setValueReweightFactor(double reweight_factor_) {valueRct_->set(reweight_factor_);}
   void setValueReweightBias(double reweight_bias) {valueRbias_->set(reweight_bias);}
   virtual void updateReweightingFactor() {};
   //
