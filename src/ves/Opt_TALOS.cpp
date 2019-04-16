@@ -64,6 +64,7 @@ private:
 	bool opt_const;
 	bool read_targetdis;
 	bool opt_rc;
+	bool do_quadratic;
 	
 	unsigned random_seed;
 	
@@ -79,7 +80,7 @@ private:
 	unsigned update_steps;
 	unsigned nw;
 	unsigned iter_time;
-	unsigned wgan_output;
+	unsigned Dw_output;
 	unsigned nrcarg;
 	unsigned rc_stride;
 	unsigned rc_dist_stride;
@@ -92,7 +93,9 @@ private:
 	double sim_temp;
 	
 	double clip_threshold_bias;
-	double clip_threshold_wgan;
+	double clip_threshold_Dw;
+	
+	float lambda;
 	
 	float clip_left;
 	float clip_right;
@@ -130,10 +133,10 @@ private:
 	std::vector<dynet::real> basis_values;
 	
 	std::string algorithm_bias;
-	std::string algorithm_wgan;
+	std::string algorithm_Dw;
 	
 	std::string targetdis_file;
-	std::string wgan_file;
+	std::string Dw_file;
 	std::string rc_file;
 	std::string rc_dist_file;
 	std::string debug_file;
@@ -144,25 +147,25 @@ private:
 	OFile odebug;
 	
 	std::vector<float> lr_bias;
-	std::vector<float> lr_wgan;
+	std::vector<float> lr_Dw;
 	std::vector<float> hyper_params_bias;
-	std::vector<float> hyper_params_wgan;
+	std::vector<float> hyper_params_Dw;
 	
 	ParameterCollection pc_bias;
-	ParameterCollection pc_wgan;
+	ParameterCollection pc_Dw;
 	
 	Trainer *train_bias;
-	Trainer *train_wgan;
+	Trainer *train_Dw;
 	
 	Parameter parm_bias;
-	Parameter parm_rcw;
-	Parameter parm_rcb;
-	MLP nn_wgan;
+	Parameter parm_rc_dw;
+	Parameter parm_rc_vb;
+	MLP nn_Dw;
 	
-	Value* valueLwgan;
-	Value* valueLbias;
+	Value* valueDwLoss;
+	Value* valueVbLoss;
 	
-	float update_wgan(const std::vector<float>&,std::vector<std::vector<float>>&);
+	float update_Dw(const std::vector<float>&,std::vector<std::vector<float>>&);
 	float update_bias(const std::vector<float>&,const std::vector<std::vector<float>>&);
 	float update_bias_and_rc(const std::vector<float>&,const std::vector<float>&,
 		const std::vector<float>&,const std::vector<float>&,const std::vector<std::vector<float>>&);
@@ -191,24 +194,25 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   Optimizer::useRestartKeywords(keys);
   Optimizer::useDynamicTargetDistributionKeywords(keys);
   ActionWithArguments::registerKeywords(keys);
-  keys.addOutputComponent("wloss","default","loss function of the W-GAN");
-  keys.addOutputComponent("bloss","default","loss function of the neural network of bias function");
+  keys.addOutputComponent("DwLoss","default","loss function of the discriminator");
+  keys.addOutputComponent("VbLoss","default","loss function of the bias function");
   keys.use("ARG");
   //~ keys.remove("ARG");
   //~ keys.add("compulsory","ARG","the arguments used to set the target distribution");
   keys.remove("STRIDE");
   keys.remove("STEPSIZE");
   keys.add("compulsory","ALGORITHM_BIAS","ADAM","the algorithm to train the neural network of bias function");
-  keys.add("compulsory","ALGORITHM_WGAN","ADAM","the algorithm to train the W-GAN");
+  keys.add("compulsory","ALGORITHM_DISCRIM","ADAM","the algorithm to train the discriminator");
   keys.add("compulsory","UPDATE_STEPS","250","the number of step to update");
   keys.add("compulsory","EPOCH_NUM","1","number of epoch for each update per walker");
-  keys.add("compulsory","HIDDEN_NUMBER","3","the number of hidden layers for W-GAN");
-  keys.add("compulsory","HIDDEN_LAYER","8","the dimensions of each hidden layer  for W-GAN");
-  keys.add("compulsory","HIDDEN_ACTIVE","RELU","active function of each hidden layer  for W-GAN");
+  keys.add("compulsory","HIDDEN_NUMBER","3","the number of hidden layers for discriminator");
+  keys.add("compulsory","HIDDEN_LAYER","8","the dimensions of each hidden layer  for discriminator");
+  keys.add("compulsory","HIDDEN_ACTIVE","RELU","active function of each hidden layer  for discriminator");
   keys.add("compulsory","CLIP_LEFT","-0.01","the left value to clip");
   keys.add("compulsory","CLIP_RIGHT","0.01","the right value to clip");
-  keys.add("compulsory","WGAN_FILE","wgan.data","file name of the coefficients of W-GAN");
-  keys.add("compulsory","WGAN_OUTPUT","1","the frequency (how many period of update) to out the coefficients of W-GAN");
+  keys.add("compulsory","DISCRIM_FILE","dw.data","file name of the coefficients of discriminator");
+  keys.add("compulsory","DISCRIM_OUTPUT","1","the frequency (how many period of update) to out the coefficients of discriminator");
+  keys.add("compulsory","QUADRATIC_FACTOR","0","a factor to adjust the loss function of discriminator");
   keys.addFlag("OPT_RC",false,"optimize reaction coordinate during the iteration");
   //~ keys.add("optional","TARGET_DIM","the dimension of the target order parameters");
   keys.add("optional","RC_INITAL_COEFFS","the initial coefficients of the target order parameters");
@@ -230,18 +234,18 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   keys.add("optional","ARG_PERIODIC","if the arguments are periodic or not");
   keys.addFlag("OPTIMIZE_CONSTANT_PARAMETER",false,"also to optimize the constant part of the basis functions");
   keys.add("optional","LEARN_RATE_BIAS","the learning rate for training the neural network of bias function");
-  keys.add("optional","LEARN_RATE_WGAN","the learning rate for training the W-GAN");
+  keys.add("optional","LEARN_RATE_DISCRIM","the learning rate for training the discriminator");
   keys.add("optional","HYPER_PARAMS_BIAS","other hyperparameters for training the neural network of bias function");
-  keys.add("optional","HYPER_PARAMS_WGAN","other hyperparameters for training the W-GAn");
+  keys.add("optional","HYPER_PARAMS_DISCRIM","other hyperparameters for training the discriminator");
   keys.add("optional","CLIP_THRESHOLD_BIAS","the clip threshold for training the neural network of bias function");
-  keys.add("optional","CLIP_THRESHOLD_WGAN","the clip threshold for training the W-GAn");
+  keys.add("optional","CLIP_THRESHOLD_DISCRIM","the clip threshold for training the discriminator");
   keys.add("optional","SIM_TEMP","the simulation temperature");
   keys.add("optional","DEBUG_FILE","the file to debug");
 }
 
 
 Opt_TALOS::~Opt_TALOS() {
-	delete train_wgan;
+	delete train_Dw;
 	delete train_bias;
 	if(opt_rc)
 	{
@@ -271,8 +275,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
   args_periodic(getNumberOfArguments(),false),
   grid_space(getNumberOfArguments()),
   train_bias(NULL),
-  train_wgan(NULL),
-  nn_wgan(pc_wgan)
+  train_Dw(NULL)
 {
 	random_seed=0;
 	if(useMultipleWalkers())
@@ -321,14 +324,14 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	parse("UPDATE_STEPS",update_steps);
 	
 	parse("ALGORITHM_BIAS",algorithm_bias);
-	parse("ALGORITHM_WGAN",algorithm_wgan);
+	parse("ALGORITHM_DISCRIM",algorithm_Dw);
 	
 	parseVector("LEARN_RATE_BIAS",lr_bias);
-	parseVector("LEARN_RATE_WGAN",lr_wgan);
+	parseVector("LEARN_RATE_DISCRIM",lr_Dw);
 	
-	std::vector<float> other_params_bias,other_params_wgan;
+	std::vector<float> other_params_bias,other_params_Dw;
 	parseVector("HYPER_PARAMS_BIAS",other_params_bias);
-	parseVector("HYPER_PARAMS_BIAS",other_params_wgan);
+	parseVector("HYPER_PARAMS_DISCRIM",other_params_Dw);
 	
 	unsigned nhidden=0;
 	parse("HIDDEN_NUMBER",nhidden);
@@ -341,8 +344,13 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	parse("CLIP_LEFT",clip_left);
 	parse("CLIP_RIGHT",clip_right);
 	
-	parse("WGAN_FILE",wgan_file);
-	parse("WGAN_OUTPUT",wgan_output);
+	parse("DISCRIM_FILE",Dw_file);
+	parse("DISCRIM_OUTPUT",Dw_output);
+	
+	do_quadratic=false;
+	parse("QUADRATIC_FACTOR",lambda);
+	if(lambda>1e-38)
+		do_quadratic=true;
 	
 	parseFlag("OPTIMIZE_CONSTANT_PARAMETER",opt_const);
 	
@@ -358,46 +366,62 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	}
 	
 	std::vector<float> init_coe;
-	std::string fullname_bias,fullname_wgan;
+	std::string fullname_bias,fullname_Dw;
 	
 	if(lr_bias.size()==0)
+	{
 		train_bias=new_traniner(algorithm_bias,pc_bias,fullname_bias);
+	}
 	else
 	{
 		if(algorithm_bias=="CyclicalSGD"||algorithm_bias=="cyclicalSGD"||algorithm_bias=="cyclicalsgd"||algorithm_bias=="CSGD"||algorithm_bias=="csgd")
+		{
 			plumed_massert(lr_bias.size()==2,"The CyclicalSGD algorithm need two learning rates");
+		}
 		else
+		{
 			plumed_massert(lr_bias.size()==1,"The "+algorithm_bias+" algorithm need only one learning rates");
+		}
+		
 		hyper_params_bias.insert(hyper_params_bias.end(),lr_bias.begin(),lr_bias.end());
 		
 		if(other_params_bias.size()>0)
 			hyper_params_bias.insert(hyper_params_bias.end(),other_params_bias.begin(),other_params_bias.end());
+		
 		train_bias=new_traniner(algorithm_bias,pc_bias,hyper_params_bias,fullname_bias);
 	}
 
-	if(lr_wgan.size()==0)
-		train_wgan=new_traniner(algorithm_wgan,pc_wgan,fullname_wgan);
+	if(lr_Dw.size()==0)
+	{
+		train_Dw=new_traniner(algorithm_Dw,pc_Dw,fullname_Dw);
+	}
 	else
 	{
-		if(algorithm_wgan=="CyclicalSGD"||algorithm_wgan=="cyclicalSGD"||algorithm_wgan=="cyclicalsgd"||algorithm_wgan=="CSGD"||algorithm_wgan=="csgd")
-			plumed_massert(lr_wgan.size()==2,"The CyclicalSGD algorithm need two learning rates");
+		if(algorithm_Dw=="CyclicalSGD"||algorithm_Dw=="cyclicalSGD"||algorithm_Dw=="cyclicalsgd"||algorithm_Dw=="CSGD"||algorithm_Dw=="csgd")
+		{
+			plumed_massert(lr_Dw.size()==2,"The CyclicalSGD algorithm need two learning rates");
+		}
 		else
-			plumed_massert(lr_wgan.size()==1,"The "+algorithm_wgan+" algorithm need only one learning rates");
-		hyper_params_wgan.insert(hyper_params_wgan.end(),lr_wgan.begin(),lr_wgan.end());
+		{
+			plumed_massert(lr_Dw.size()==1,"The "+algorithm_Dw+" algorithm need only one learning rates");
+		}
 		
-		if(other_params_wgan.size()>0)
-			hyper_params_wgan.insert(hyper_params_wgan.end(),other_params_wgan.begin(),other_params_wgan.end());
-		train_wgan=new_traniner(algorithm_wgan,pc_wgan,hyper_params_wgan,fullname_wgan);
+		hyper_params_Dw.insert(hyper_params_Dw.end(),lr_Dw.begin(),lr_Dw.end());
+		
+		if(other_params_Dw.size()>0)
+			hyper_params_Dw.insert(hyper_params_Dw.end(),other_params_Dw.begin(),other_params_Dw.end());
+		
+		train_Dw=new_traniner(algorithm_Dw,pc_Dw,hyper_params_Dw,fullname_Dw);
 	}
 	
 	clip_threshold_bias=train_bias->clip_threshold;
-	clip_threshold_wgan=train_wgan->clip_threshold;
+	clip_threshold_Dw=train_Dw->clip_threshold;
 	
 	parse("CLIP_THRESHOLD_BIAS",clip_threshold_bias);
-	parse("CLIP_THRESHOLD_WGAN",clip_threshold_wgan);
+	parse("CLIP_THRESHOLD_DISCRIM",clip_threshold_Dw);
 	
 	train_bias->clip_threshold = clip_threshold_bias;
-	train_wgan->clip_threshold = clip_threshold_wgan;
+	train_Dw->clip_threshold = clip_threshold_Dw;
 	
 	parseFlag("OPT_RC",opt_rc);
 	
@@ -409,17 +433,17 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	unsigned ldim=target_dim;
 	for(unsigned i=0;i!=nhidden;++i)
 	{
-		nn_wgan.append(pc_wgan,Layer(ldim,hidden_layers[i],activation_function(hidden_active[i]),0));
+		nn_Dw.append(pc_Dw,Layer(ldim,hidden_layers[i],activation_function(hidden_active[i]),0));
 		ldim=hidden_layers[i];
 	}
-	nn_wgan.append(pc_wgan,Layer(ldim,1,LINEAR,0));
+	nn_Dw.append(pc_Dw,Layer(ldim,1,LINEAR,0));
 	
 	parm_bias=pc_bias.add_parameters({1,tot_basis});
 	
 	if(opt_rc)
 	{
-		parm_rcw=pc_bias.add_parameters({target_dim,narg});
-		parm_rcb=pc_bias.add_parameters({target_dim});
+		parm_rc_dw=pc_bias.add_parameters({target_dim,narg});
+		parm_rc_vb=pc_bias.add_parameters({target_dim});
 		
 		parse("OPT_TARGET_FILE",rc_dist_file);
 		parse("OPT_TARGET_STRIDE",rc_dist_stride);
@@ -471,10 +495,10 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	}
 	
 	init_coe.resize(tot_basis);
-	std::vector<float> init_rcw(narg);
-	std::vector<float> init_rcb(1);
+	std::vector<float> init_rc_dw(narg);
+	std::vector<float> init_rc_vb(1);
 	
-	std::vector<float> params_wgan(nn_wgan.parameters_number());
+	std::vector<float> params_Dw(nn_Dw.parameters_number());
 	
 	if(useMultipleWalkers())
 	{
@@ -483,28 +507,28 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 			if(multi_sim_comm.Get_rank()==0)
 			{
 				init_coe=as_vector(*parm_bias.values());
-				params_wgan=nn_wgan.get_parameters();
+				params_Dw=nn_Dw.get_parameters();
 				if(opt_rc)
 				{
-					init_rcw=as_vector(*parm_rcw.values());
-					init_rcb=as_vector(*parm_rcb.values());
+					init_rc_dw=as_vector(*parm_rc_dw.values());
+					init_rc_vb=as_vector(*parm_rc_vb.values());
 				}
 			}
 			multi_sim_comm.Barrier();
 			multi_sim_comm.Bcast(init_coe,0);
-			multi_sim_comm.Bcast(params_wgan,0);
+			multi_sim_comm.Bcast(params_Dw,0);
 			if(opt_rc)
 			{
-				multi_sim_comm.Bcast(init_rcw,0);
-				multi_sim_comm.Bcast(init_rcb,0);
+				multi_sim_comm.Bcast(init_rc_dw,0);
+				multi_sim_comm.Bcast(init_rc_vb,0);
 			}
 		}
 		comm.Bcast(init_coe,0);
-		comm.Bcast(params_wgan,0);
+		comm.Bcast(params_Dw,0);
 		if(opt_rc)
 		{
-			comm.Bcast(init_rcw,0);
-			comm.Bcast(init_rcb,0);
+			comm.Bcast(init_rc_dw,0);
+			comm.Bcast(init_rc_vb,0);
 		}
 	}
 	else
@@ -512,27 +536,27 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		if(comm.Get_rank()==0)
 		{
 			init_coe=as_vector(*parm_bias.values());
-			params_wgan=nn_wgan.get_parameters();
+			params_Dw=nn_Dw.get_parameters();
 			if(opt_rc)
 			{
-				init_rcw=as_vector(*parm_rcw.values());
-				init_rcb=as_vector(*parm_rcb.values());
+				init_rc_dw=as_vector(*parm_rc_dw.values());
+				init_rc_vb=as_vector(*parm_rc_vb.values());
 			}
 		}
 		comm.Barrier();
 		comm.Bcast(init_coe,0);
-		comm.Bcast(params_wgan,0);
+		comm.Bcast(params_Dw,0);
 		if(opt_rc)
 		{
-			comm.Bcast(init_rcw,0);
-			comm.Bcast(init_rcb,0);
+			comm.Bcast(init_rc_dw,0);
+			comm.Bcast(init_rc_vb,0);
 		}
 	}
 	
-	parseVector("RC_INITAL_COEFFS",init_rcw);
+	parseVector("RC_INITAL_COEFFS",init_rc_dw);
 	
 	parm_bias.set_value(init_coe);
-	nn_wgan.set_parameters(params_wgan);
+	nn_Dw.set_parameters(params_Dw);
 	if(opt_rc)
 	{
 		std::vector<float> input_coe;
@@ -541,27 +565,27 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		if(input_coe.size()>0)
 		{
 			if(input_coe.size()==narg)
-				init_rcw=input_coe;
+				init_rc_dw=input_coe;
 			else if(input_coe.size()==narg+1)
 			{
-				init_rcb={input_coe.back()};
+				init_rc_vb={input_coe.back()};
 				input_coe.pop_back();
-				init_rcw=input_coe;
+				init_rc_dw=input_coe;
 			}
 			else
 				plumed_merror("the number of RC_INITAL_COEFFS must be equal to or larger than the arguments number");
 		}
 		
-		parm_rcw.set_value(init_rcw);
-		parm_rcb.set_value(init_rcb);
+		parm_rc_dw.set_value(init_rc_dw);
+		parm_rc_vb.set_value(init_rc_vb);
 		
 		orc.printField("time",getTime());
-		for(unsigned i=0;i!=init_rcw.size();++i)
+		for(unsigned i=0;i!=init_rc_dw.size();++i)
 		{
 			std::string lab="W"+std::to_string(i);
-			orc.printField(lab,init_rcw[i]);
+			orc.printField(lab,init_rc_dw[i]);
 		}
-		orc.printField("b",init_rcb[0]);
+		orc.printField("b",init_rc_vb[0]);
 		orc.printField();
 		orc.flush();
 	}
@@ -748,14 +772,15 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		nepoch*=nw;
 	}
 	
-	addComponent("wloss"); componentIsNotPeriodic("wloss");
-	valueLwgan=getPntrToComponent("wloss");
-	addComponent("bloss"); componentIsNotPeriodic("bloss");
-	valueLbias=getPntrToComponent("bloss");
+	addComponent("DwLoss"); componentIsNotPeriodic("DwLoss");
+	valueDwLoss=getPntrToComponent("DwLoss");
+	addComponent("VbLoss"); componentIsNotPeriodic("VbLoss");
+	valueVbLoss=getPntrToComponent("VbLoss");
 	
 	turnOffHessian();
 	checkRead();
 	
+	log.printf("  Targeted adversarial learning otimizied sampling (TALOS)\n");
 	log.printf("  with random seed: %s\n",std::to_string(random_seed).c_str());
 	log.printf("  with lower boundary of the grid:");
 	for(unsigned i=0;i!=grid_min.size();++i)
@@ -810,24 +835,28 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		}
 	}
 	
-	log.printf("  Use %s to train the W-GAN\n",fullname_wgan.c_str());
-	if(lr_wgan.size()>0)
+	log.printf("  Use %s to train the discriminator\n",fullname_Dw.c_str());
+	if(do_quadratic)
+		log.printf("    with quadratic term factor: %f\n",lambda);
+	else
+		log.printf("    without using quadratic term factor.\n");
+	if(lr_Dw.size()>0)
 	{
 		log.printf("    with learning rates:");
-		for(unsigned i=0;i!=lr_wgan.size();++i)
-			log.printf(" %f",lr_wgan[i]);
+		for(unsigned i=0;i!=lr_Dw.size();++i)
+			log.printf(" %f",lr_Dw[i]);
 		log.printf("\n");
-		if(other_params_wgan.size()>0)
+		if(other_params_Dw.size()>0)
 		{
 			log.printf("    with other hyperparameters:");
-			for(unsigned i=0;i!=other_params_wgan.size();++i)
-				log.printf(" %f",other_params_wgan[i]);
+			for(unsigned i=0;i!=other_params_Dw.size();++i)
+				log.printf(" %f",other_params_Dw[i]);
 			log.printf("\n");
 		}
 	}
 	else
 		log.printf("    with default hyperparameters\n");
-	log.printf("    with clip threshold: %f\n",clip_threshold_wgan);
+	log.printf("    with clip threshold: %f\n",clip_threshold_Dw);
 	log.printf("    with hidden layers: %d\n",int(nhidden));
 	for(unsigned i=0;i!=nhidden;++i)
 		log.printf("      Hidden layer %d with dimension %d and activation function \"%s\"\n",int(i),int(hidden_layers[i]),hidden_active[i].c_str());
@@ -853,7 +882,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	log.printf("    with clip threshold: %f\n",clip_threshold_bias);
 	
 	log.printf("  Use epoch number %d and batch size %d to update the two networks\n",int(nepoch),int(batch_size));
-	log << plumed.cite("Zhang and Noe");
+	log << plumed.cite("Zhang, Yang and Noe");
 	log.printf("\n");
 }
 
@@ -904,8 +933,8 @@ void Opt_TALOS::update()
 	if(opt_rc)
 	{
 		ComputationGraph cg;
-		Expression W = parameter(cg,parm_rcw);
-		Expression b = parameter(cg,parm_rcb);
+		Expression W = parameter(cg,parm_rc_dw);
+		Expression b = parameter(cg,parm_rc_vb);
 		Expression x = input(cg,{narg},&varg);
 		Expression y_pred = tanh( W * x + b);
 		
@@ -1016,18 +1045,18 @@ void Opt_TALOS::update()
 		if(input_bias.size()!=tot_basis*update_steps)
 			plumed_merror("ERROR! The size of the input_bias mismatch: "+std::to_string(input_bias.size()));
 
-		double wloss=0;
-		double bloss=0;
+		double dwloss=0;
+		double vbloss=0;
 		std::vector<float> new_coe(tot_basis,0);
 		std::vector<std::vector<float>> vec_fw;
-		std::vector<float> params_wgan(nn_wgan.parameters_number(),0);
+		std::vector<float> params_Dw(nn_Dw.parameters_number(),0);
 		
-		std::vector<float> new_rcw;
-		std::vector<float> new_rcb;
+		std::vector<float> new_rc_dw;
+		std::vector<float> new_rc_vb;
 		if(opt_rc)
 		{
-			new_rcw.resize(target_dim*narg);
-			new_rcb.resize(target_dim);
+			new_rc_dw.resize(target_dim*narg);
+			new_rc_vb.resize(target_dim);
 		}
 		
 		if(useMultipleWalkers())
@@ -1077,90 +1106,90 @@ void Opt_TALOS::update()
 			{
 				if(multi_sim_comm.Get_rank()==0)
 				{
-					wloss=update_wgan(all_input_rc,vec_fw);
+					dwloss=update_Dw(all_input_rc,vec_fw);
 					if(opt_rc)
-						bloss=update_bias_and_rc(all_input_bias,
+						vbloss=update_bias_and_rc(all_input_bias,
 							all_rc_arg_sample,all_p_rc_sample1,
 							all_p_rc_sample2,vec_fw);
 					else
-						bloss=update_bias(all_input_bias,vec_fw);
+						vbloss=update_bias(all_input_bias,vec_fw);
 					vec_fw.resize(0);
 					new_coe=as_vector(*parm_bias.values());
-					params_wgan=nn_wgan.get_parameters();
+					params_Dw=nn_Dw.get_parameters();
 					if(opt_rc)
 					{
-						new_rcw=as_vector(*parm_rcw.values());
-						new_rcb=as_vector(*parm_rcb.values());
+						new_rc_dw=as_vector(*parm_rc_dw.values());
+						new_rc_vb=as_vector(*parm_rc_vb.values());
 					}
 				}
 				multi_sim_comm.Barrier();
-				multi_sim_comm.Bcast(wloss,0);
-				multi_sim_comm.Bcast(bloss,0);
+				multi_sim_comm.Bcast(dwloss,0);
+				multi_sim_comm.Bcast(vbloss,0);
 				multi_sim_comm.Bcast(new_coe,0);
-				multi_sim_comm.Bcast(params_wgan,0);
+				multi_sim_comm.Bcast(params_Dw,0);
 				if(opt_rc)
 				{
-					multi_sim_comm.Bcast(new_rcw,0);
-					multi_sim_comm.Bcast(new_rcb,0);
+					multi_sim_comm.Bcast(new_rc_dw,0);
+					multi_sim_comm.Bcast(new_rc_vb,0);
 				}
 			}
 			comm.Barrier();
-			comm.Bcast(wloss,0);
-			comm.Bcast(bloss,0);
+			comm.Bcast(dwloss,0);
+			comm.Bcast(vbloss,0);
 			comm.Bcast(new_coe,0);
-			comm.Bcast(params_wgan,0);
+			comm.Bcast(params_Dw,0);
 			if(opt_rc)
 			{
-				comm.Bcast(new_rcw,0);
-				comm.Bcast(new_rcb,0);
+				comm.Bcast(new_rc_dw,0);
+				comm.Bcast(new_rc_vb,0);
 			}
 		}
 		else
 		{
 			if(comm.Get_rank()==0)
 			{
-				wloss=update_wgan(input_rc,vec_fw);
+				dwloss=update_Dw(input_rc,vec_fw);
 				if(opt_rc)
-					bloss=update_bias_and_rc(input_bias,rc_arg_sample,
+					vbloss=update_bias_and_rc(input_bias,rc_arg_sample,
 						p_rc_sample1,p_rc_sample2,vec_fw);
 				else
-					bloss=update_bias(input_bias,vec_fw);
+					vbloss=update_bias(input_bias,vec_fw);
 				vec_fw.resize(0);
 				new_coe=as_vector(*parm_bias.values());
-				params_wgan=nn_wgan.get_parameters();
+				params_Dw=nn_Dw.get_parameters();
 				if(opt_rc)
 				{
-					new_rcw=as_vector(*parm_rcw.values());
-					new_rcb=as_vector(*parm_rcb.values());
+					new_rc_dw=as_vector(*parm_rc_dw.values());
+					new_rc_vb=as_vector(*parm_rc_vb.values());
 				}
 			}
 			comm.Barrier();
-			comm.Bcast(wloss,0);
-			comm.Bcast(bloss,0);
+			comm.Bcast(dwloss,0);
+			comm.Bcast(vbloss,0);
 			comm.Bcast(new_coe,0);
-			comm.Bcast(params_wgan,0);
+			comm.Bcast(params_Dw,0);
 			if(opt_rc)
 			{
-				comm.Bcast(new_rcw,0);
-				comm.Bcast(new_rcb,0);
+				comm.Bcast(new_rc_dw,0);
+				comm.Bcast(new_rc_vb,0);
 			}
 		}
 		
 		parm_bias.set_value(new_coe);
-		nn_wgan.set_parameters(params_wgan);
+		nn_Dw.set_parameters(params_Dw);
 		if(opt_rc)
 		{
-			parm_rcw.set_value(new_rcw);
-			parm_rcb.set_value(new_rcb);
+			parm_rc_dw.set_value(new_rc_dw);
+			parm_rc_vb.set_value(new_rc_vb);
 			if(iter_time%rc_stride==0)
 			{
 				orc.printField("time",getTime());
-				for(unsigned i=0;i!=new_rcw.size();++i)
+				for(unsigned i=0;i!=new_rc_dw.size();++i)
 				{
 					std::string lab="W"+std::to_string(i);
-					orc.printField(lab,new_rcw[i]);
+					orc.printField(lab,new_rc_dw[i]);
 				}
-				orc.printField("b",new_rcb[0]);
+				orc.printField("b",new_rc_vb[0]);
 				orc.printField();
 				orc.flush();
 			}
@@ -1177,8 +1206,8 @@ void Opt_TALOS::update()
 			}
 		}
 
-		valueLwgan->set(wloss);
-		valueLbias->set(bloss);
+		valueDwLoss->set(dwloss);
+		valueVbLoss->set(vbloss);
 		
 		input_rc.resize(0);
 		input_bias.resize(0);
@@ -1190,10 +1219,10 @@ void Opt_TALOS::update()
 			p_rc_sample2.resize(0);
 		}
 		
-		if(comm.Get_rank()==0&&multi_sim_comm.Get_rank()==0&&iter_time%wgan_output==0)
+		if(comm.Get_rank()==0&&multi_sim_comm.Get_rank()==0&&iter_time%Dw_output==0)
 		{
-			TextFileSaver saver(wgan_file);
-			saver.save(pc_wgan);
+			TextFileSaver saver(Dw_file);
+			saver.save(pc_Dw);
 		}
 		
 		++iter_time;
@@ -1249,8 +1278,8 @@ void Opt_TALOS::update()
 	}
 }
 
-// training the parameter of WGAN
-float Opt_TALOS::update_wgan(const std::vector<float>& all_input_rc,std::vector<std::vector<float>>& vec_fw)
+// training the parameter of discriminator
+float Opt_TALOS::update_Dw(const std::vector<float>& all_input_rc,std::vector<std::vector<float>>& vec_fw)
 {
 	ComputationGraph cg;
 	Dim xs_dim({target_dim},batch_size);
@@ -1265,17 +1294,23 @@ float Opt_TALOS::update_wgan(const std::vector<float>& all_input_rc,std::vector<
 	Expression x_target=input(cg,xt_dim,&input_target);
 	Expression p_target=input(cg,pt_dim,&target_dis);
 
-	Expression y_sample=nn_wgan.run(x_sample,cg);
-	Expression y_target=nn_wgan.run(x_target,cg);
+	Expression y_sample=nn_Dw.run(x_sample,cg);
+	Expression y_target=nn_Dw.run(x_target,cg);
 	
 	Expression l_target=y_target*p_target;
 
 	Expression loss_sample=mean_batches(y_sample);
 	Expression loss_target=mean_batches(l_target);
 
-	Expression loss_wgan=loss_sample-loss_target;
+	Expression loss_Dw=loss_sample-loss_target;
 	
-	double wloss=0;
+	if(do_quadratic)
+	{
+		Expression loss_sample2=lambda*loss_sample*loss_sample;
+		loss_Dw=loss_Dw+loss_sample2;
+	}
+	
+	double dwloss=0;
 	double loss;
 	std::vector<std::vector<float>> vec_input_sample;
 	for(unsigned i=0;i!=nepoch;++i)
@@ -1283,14 +1318,14 @@ float Opt_TALOS::update_wgan(const std::vector<float>& all_input_rc,std::vector<
 		for(unsigned j=0;j!=wsize;++j)
 			input_sample[j]=all_input_rc[i*wsize+j];
 		vec_input_sample.push_back(input_sample);
-		loss = as_scalar(cg.forward(loss_wgan));
-		wloss += loss;
-		cg.backward(loss_wgan);
-		train_wgan->update();
+		loss = as_scalar(cg.forward(loss_Dw));
+		dwloss += loss;
+		cg.backward(loss_Dw);
+		train_Dw->update();
 		//~ std::cout<<"Loss = "<<loss<<std::endl;
-		nn_wgan.clip(clip_left,clip_right);
+		nn_Dw.clip(clip_left,clip_right);
 	}
-	wloss/=nepoch;
+	dwloss/=nepoch;
 	
 	for(unsigned i=0;i!=nepoch;++i)
 	{
@@ -1298,7 +1333,7 @@ float Opt_TALOS::update_wgan(const std::vector<float>& all_input_rc,std::vector<
 		vec_fw.push_back(as_vector(cg.forward(y_sample)));
 	}
 	
-	return wloss;
+	return dwloss;
 }
 
 // update the coeffients of the basis function
@@ -1317,20 +1352,20 @@ float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std:
 	Expression loss_bias = beta * fw * y_pred;
 	Expression loss_mean = mean_batches(loss_bias);
 
-	double bloss=0;
+	double vbloss=0;
 	for(unsigned i=0;i!=nepoch;++i)
 	{
 		fw_batch=vec_fw[i];
 		for(unsigned j=0;j!=bsize;++j)
 			basis_batch[j]=all_input_bias[i*bsize+j];
-		bloss += as_scalar(cg.forward(loss_mean));
+		vbloss += as_scalar(cg.forward(loss_mean));
 		cg.backward(loss_mean);
 		train_bias->update();
 	}
-	bloss/=nepoch;
+	vbloss/=nepoch;
 	
 	//~ new_coe=as_vector(W.value());
-	return bloss;
+	return vbloss;
 }
 
 float Opt_TALOS::update_bias_and_rc(const std::vector<float>& all_input_bias,
@@ -1363,10 +1398,10 @@ float Opt_TALOS::update_bias_and_rc(const std::vector<float>& all_input_bias,
 	Expression p_rc1 = input(cg,prc_dim,&p_rc1_batch);
 	Expression p_rc2 = input(cg,prc_dim,&p_rc2_batch);
 	
-	Expression Wrc = parameter(cg,parm_rcw);
-	Expression brc = parameter(cg,parm_rcb);
+	Expression Dw_rc = parameter(cg,parm_rc_dw);
+	Expression Vb_rc = parameter(cg,parm_rc_vb);
 	
-	Expression y_rc = (tanh( Wrc * x_r + brc) + 1.0)/2;
+	Expression y_rc = (tanh( Dw_rc * x_r + Vb_rc) + 1.0)/2;
 	Expression l_rc1 = dynet::log(y_rc) * p_rc1;
 	Expression l_rc2 = dynet::log(1.0 - y_rc) * p_rc2;
 	
@@ -1375,7 +1410,7 @@ float Opt_TALOS::update_bias_and_rc(const std::vector<float>& all_input_bias,
 	Expression loss_fin = loss_mean - loss_rc;
 	//~ Expression loss_fin = loss_mean;
 
-	double bloss=0;
+	double vbloss=0;
 	for(unsigned i=0;i!=nepoch;++i)
 	{
 		fw_batch=vec_fw[i];
@@ -1393,21 +1428,21 @@ float Opt_TALOS::update_bias_and_rc(const std::vector<float>& all_input_bias,
 		{
 			basis_batch[j]=all_input_bias[i*bsize+j];
 		}
-		bloss += as_scalar(cg.forward(loss_fin));
+		vbloss += as_scalar(cg.forward(loss_fin));
 		cg.backward(loss_fin);
 		train_bias->update();
 	}
-	bloss/=nepoch;
+	vbloss/=nepoch;
 	
 	//~ new_coe=as_vector(W.value());
-	return bloss;
+	return vbloss;
 }
 
 void Opt_TALOS::update_rc_target()
 {	
 	ComputationGraph cg;
-	Expression W = parameter(cg,parm_rcw);
-	Expression b = parameter(cg,parm_rcb);
+	Expression W = parameter(cg,parm_rc_dw);
+	Expression b = parameter(cg,parm_rc_vb);
 	Dim x_dim({narg},3);
 	Expression x = input(cg,x_dim,&ps_boundary);
 	Expression y_pred = tanh( W * x + b);
@@ -1452,7 +1487,6 @@ void Opt_TALOS::update_rc_target()
 	for(unsigned i=0;i!=ntarget;++i)
 		target_dis[i]/=(sum/ntarget);
 }
-
 
 template<class T>
 bool Opt_TALOS::parseVectorAuto(const std::string& keyword, std::vector<T>& values, unsigned num)
