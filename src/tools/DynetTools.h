@@ -116,9 +116,14 @@ public:
    * \brief Default constructor
    * \details Dont forget to add layers!
    */
-  MLP(ParameterCollection & model) {
-    LAYERS = 0;
-  }
+  explicit MLP():LAYERS(0) {}
+  
+   /**
+   * \brief Default constructor
+   * \details Dont forget to add layers!
+   */
+  explicit MLP(ParameterCollection & model):LAYERS(0){}
+  
   /**
    * \brief Returns a Multilayer perceptron
    * \details Creates a feedforward multilayer perceptron based on a list of layer descriptions
@@ -126,7 +131,7 @@ public:
    * \param model ParameterCollection to contain parameters
    * \param layers Layers description
    */
-  MLP(ParameterCollection& model,std::vector<Layer> layers);
+  explicit MLP(ParameterCollection& model,std::vector<Layer> layers);
   
   /**
    * \brief Append a layer at the end of the network
