@@ -65,6 +65,8 @@ private:
 	bool read_targetdis;
 	bool opt_rc;
 	bool do_quadratic;
+	bool do_clip;
+	bool use_full_loss;
 	
 	unsigned random_seed;
 	
@@ -84,6 +86,12 @@ private:
 	unsigned nrcarg;
 	unsigned rc_stride;
 	unsigned rc_dist_stride;
+	
+	unsigned update_basis_size;
+	unsigned update_target_size;
+	unsigned tot_data_size;
+	unsigned tot_basis_size;
+	unsigned tot_target_size;
 	
 	const long double PI=3.14159265358979323846264338327950288419716939937510582;
 	
@@ -128,6 +136,8 @@ private:
 	std::vector<float> state_boundary;
 	std::vector<float> ps_boundary;
 	
+	std::vector<std::vector<double>> coe_now;
+	
 	std::vector<dynet::real> input_target;
 	std::vector<dynet::real> target_dis;
 	std::vector<dynet::real> basis_values;
@@ -165,7 +175,7 @@ private:
 	Value* valueDwLoss;
 	Value* valueVbLoss;
 	
-	float update_Dw(const std::vector<float>&,std::vector<std::vector<float>>&);
+	float update_value_network(const std::vector<float>&,std::vector<std::vector<float>>&);
 	float update_bias(const std::vector<float>&,const std::vector<std::vector<float>>&);
 	float update_bias_and_rc(const std::vector<float>&,const std::vector<float>&,
 		const std::vector<float>&,const std::vector<float>&,const std::vector<std::vector<float>>&);
@@ -194,7 +204,7 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   Optimizer::useRestartKeywords(keys);
   Optimizer::useDynamicTargetDistributionKeywords(keys);
   ActionWithArguments::registerKeywords(keys);
-  keys.addOutputComponent("DwLoss","default","loss function of the discriminator");
+  keys.addOutputComponent("DwLoss","default","loss function of the discriminator (value network)");
   keys.addOutputComponent("VbLoss","default","loss function of the bias function");
   keys.use("ARG");
   //~ keys.remove("ARG");
@@ -202,18 +212,19 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   keys.remove("STRIDE");
   keys.remove("STEPSIZE");
   keys.add("compulsory","ALGORITHM_BIAS","ADAM","the algorithm to train the neural network of bias function");
-  keys.add("compulsory","ALGORITHM_DISCRIM","ADAM","the algorithm to train the discriminator");
-  keys.add("compulsory","UPDATE_STEPS","250","the number of step to update");
+  keys.add("compulsory","ALGORITHM_VALUE","ADAM","the algorithm to train the discriminator (value network)");
+  keys.add("compulsory","UPDATE_STEPS","250","the number of steps to update the neural network");
   keys.add("compulsory","EPOCH_NUM","1","number of epoch for each update per walker");
-  keys.add("compulsory","HIDDEN_NUMBER","3","the number of hidden layers for discriminator");
-  keys.add("compulsory","HIDDEN_LAYER","8","the dimensions of each hidden layer  for discriminator");
-  keys.add("compulsory","HIDDEN_ACTIVE","RELU","active function of each hidden layer  for discriminator");
-  keys.add("compulsory","CLIP_LEFT","-0.01","the left value to clip");
-  keys.add("compulsory","CLIP_RIGHT","0.01","the right value to clip");
-  keys.add("compulsory","DISCRIM_FILE","dw.data","file name of the coefficients of discriminator");
-  keys.add("compulsory","DISCRIM_OUTPUT","1","the frequency (how many period of update) to out the coefficients of discriminator");
-  keys.add("compulsory","QUADRATIC_FACTOR","0","a factor to adjust the loss function of discriminator");
+  keys.add("compulsory","HIDDEN_NUMBER","3","the number of hidden layers for discriminator (value network)");
+  keys.add("compulsory","HIDDEN_LAYER","8","the dimensions of each hidden layer  for discriminator (value network)");
+  keys.add("compulsory","HIDDEN_ACTIVE","RELU","active function of each hidden layer  for discriminator (value network)");
+  keys.add("compulsory","VALUE_FILE","dw.data","file name of the coefficients of discriminator (value network)");
+  keys.add("compulsory","VALUE_OUTPUT","1","the frequency (how many period of update) to out the coefficients of discriminator (value network)");
+  keys.add("compulsory","QUADRATIC_FACTOR","0","a factor to adjust the loss function of discriminator (value network)");
+  keys.add("compulsory","CLIP_RANGE","-0.01,0.01","the range of the value to clip");
+  keys.addFlag("FULL_LOSS_FUNCTION",false,"use the full form of loss function to train the bias potential");
   keys.addFlag("OPT_RC",false,"optimize reaction coordinate during the iteration");
+  keys.addFlag("NOT_CLIP",false,"do not clip the neural netwrok of discriminator (value network) during training");
   //~ keys.add("optional","TARGET_DIM","the dimension of the target order parameters");
   keys.add("optional","RC_INITAL_COEFFS","the initial coefficients of the target order parameters");
   keys.add("optional","TARGETDIST_FILE","read target distribution from file");
@@ -234,11 +245,11 @@ void Opt_TALOS::registerKeywords(Keywords& keys) {
   keys.add("optional","ARG_PERIODIC","if the arguments are periodic or not");
   keys.addFlag("OPTIMIZE_CONSTANT_PARAMETER",false,"also to optimize the constant part of the basis functions");
   keys.add("optional","LEARN_RATE_BIAS","the learning rate for training the neural network of bias function");
-  keys.add("optional","LEARN_RATE_DISCRIM","the learning rate for training the discriminator");
+  keys.add("optional","LEARN_RATE_VALUE","the learning rate for training the discriminator (value network)");
   keys.add("optional","HYPER_PARAMS_BIAS","other hyperparameters for training the neural network of bias function");
-  keys.add("optional","HYPER_PARAMS_DISCRIM","other hyperparameters for training the discriminator");
+  keys.add("optional","HYPER_PARAMS_VALUE","other hyperparameters for training the discriminator (value network)");
   keys.add("optional","CLIP_THRESHOLD_BIAS","the clip threshold for training the neural network of bias function");
-  keys.add("optional","CLIP_THRESHOLD_DISCRIM","the clip threshold for training the discriminator");
+  keys.add("optional","CLIP_THRESHOLD_VALUE","the clip threshold for training the discriminator (value network)");
   keys.add("optional","SIM_TEMP","the simulation temperature");
   keys.add("optional","DEBUG_FILE","the file to debug");
 }
@@ -324,14 +335,14 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	parse("UPDATE_STEPS",update_steps);
 	
 	parse("ALGORITHM_BIAS",algorithm_bias);
-	parse("ALGORITHM_DISCRIM",algorithm_Dw);
+	parse("ALGORITHM_VALUE",algorithm_Dw);
 	
 	parseVector("LEARN_RATE_BIAS",lr_bias);
-	parseVector("LEARN_RATE_DISCRIM",lr_Dw);
+	parseVector("LEARN_RATE_VALUE",lr_Dw);
 	
 	std::vector<float> other_params_bias,other_params_Dw;
 	parseVector("HYPER_PARAMS_BIAS",other_params_bias);
-	parseVector("HYPER_PARAMS_DISCRIM",other_params_Dw);
+	parseVector("HYPER_PARAMS_VALUE",other_params_Dw);
 	
 	unsigned nhidden=0;
 	parse("HIDDEN_NUMBER",nhidden);
@@ -341,16 +352,32 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	parseVectorAuto("HIDDEN_LAYER",hidden_layers,nhidden);
 	parseVectorAuto("HIDDEN_ACTIVE",hidden_active,nhidden);
 	
-	parse("CLIP_LEFT",clip_left);
-	parse("CLIP_RIGHT",clip_right);
+	do_clip=true;
+	bool no_clip;
+	parseFlag("NOT_CLIP",no_clip);
+	if(no_clip)
+		do_clip=false;
+	else
+	{
+		std::vector<float> clips; 
+		parseVector("CLIP_RANGE",clips);
+		plumed_massert(clips.size()>=2,"CLIP_RANGE should has left and right values");
+		clip_left=clips[0];
+		clip_right=clips[1];
+		plumed_massert(clip_right>clip_left,"Clip left value should less than clip right value");
+	}
 	
-	parse("DISCRIM_FILE",Dw_file);
-	parse("DISCRIM_OUTPUT",Dw_output);
+	//~ plumed_merror("DEBUG!");
+	
+	parse("VALUE_FILE",Dw_file);
+	parse("VALUE_OUTPUT",Dw_output);
 	
 	do_quadratic=false;
 	parse("QUADRATIC_FACTOR",lambda);
 	if(lambda>1e-38)
 		do_quadratic=true;
+		
+	parseFlag("FULL_LOSS_FUNCTION",use_full_loss);
 	
 	parseFlag("OPTIMIZE_CONSTANT_PARAMETER",opt_const);
 	
@@ -418,7 +445,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	clip_threshold_Dw=train_Dw->clip_threshold;
 	
 	parse("CLIP_THRESHOLD_BIAS",clip_threshold_bias);
-	parse("CLIP_THRESHOLD_DISCRIM",clip_threshold_Dw);
+	parse("CLIP_THRESHOLD_VALUE",clip_threshold_Dw);
 	
 	train_bias->clip_threshold = clip_threshold_bias;
 	train_Dw->clip_threshold = clip_threshold_Dw;
@@ -590,6 +617,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		orc.flush();
 	}
 
+	coe_now.resize(0);
 	unsigned id=0;
 	for(unsigned i=0;i!=nbiases;++i)
 	{
@@ -601,6 +629,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 			else
 				coe[j]=init_coe[id++];
 		}
+		coe_now.push_back(coe);
 		Coeffs(i).setValues(coe);
 	}
 	
@@ -764,12 +793,23 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		}
 	}
 	
+	update_basis_size=update_steps*tot_basis;
+	update_target_size=update_steps*target_dim;
+	
+	tot_data_size=update_steps;
+	tot_basis_size=update_basis_size;
+	tot_target_size=update_target_size;
+	
 	if(useMultipleWalkers())
 	{
 		if(comm.Get_rank()==0)
 			nw=multi_sim_comm.Get_size();
 		comm.Bcast(nw,0);
-		nepoch*=nw;
+		
+		nepoch*=nw;	
+		tot_data_size*=nw;
+		tot_basis_size*=nw;
+		tot_target_size*=nw;
 	}
 	
 	addComponent("DwLoss"); componentIsNotPeriodic("DwLoss");
@@ -835,7 +875,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		}
 	}
 	
-	log.printf("  Use %s to train the discriminator\n",fullname_Dw.c_str());
+	log.printf("  Use %s to train the discriminator (value network)\n",fullname_Dw.c_str());
 	if(do_quadratic)
 		log.printf("    with quadratic term factor: %f\n",lambda);
 	else
@@ -860,9 +900,16 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	log.printf("    with hidden layers: %d\n",int(nhidden));
 	for(unsigned i=0;i!=nhidden;++i)
 		log.printf("      Hidden layer %d with dimension %d and activation function \"%s\"\n",int(i),int(hidden_layers[i]),hidden_active[i].c_str());
-	log.printf("    with clip range %f to %f\n",clip_left,clip_right);
+	if(do_clip)
+		log.printf("    with clip range %f to %f\n",clip_left,clip_right);
+	else
+		log.printf("    without cliping\n");
 	
 	log.printf("  Use %s to train the neural network of bias function\n",fullname_bias.c_str());
+	if(use_full_loss)
+		log.printf("  with the full form of the loss function.\n");
+	else
+		log.printf("  with the approximated form of the loss function.\n");
 	if(lr_bias.size()>0)
 	{
 		log.printf("    with learning rates:");
@@ -1040,9 +1087,9 @@ void Opt_TALOS::update()
 	
 	if(step%update_steps==0&&counts>0)
 	{
-		if(input_rc.size()!=target_dim*update_steps)
+		if(input_rc.size()!=update_target_size)
 			plumed_merror("ERROR! The size of the input_rc mismatch: "+std::to_string(input_rc.size()));
-		if(input_bias.size()!=tot_basis*update_steps)
+		if(input_bias.size()!=update_basis_size)
 			plumed_merror("ERROR! The size of the input_bias mismatch: "+std::to_string(input_bias.size()));
 
 		double dwloss=0;
@@ -1068,8 +1115,8 @@ void Opt_TALOS::update()
 			std::vector<float> all_input_rc;
 			std::vector<float> all_input_bias;
 			
-			all_input_rc.resize(nw*target_dim*update_steps,0);
-			all_input_bias.resize(nw*tot_basis*update_steps,0);
+			all_input_rc.resize(tot_target_size,0);
+			all_input_bias.resize(tot_basis_size,0);
 			
 			std::vector<float> all_rc_arg_sample;
 			std::vector<float> all_p_rc_sample1;
@@ -1077,9 +1124,9 @@ void Opt_TALOS::update()
 			
 			if(opt_rc)
 			{
-				all_rc_arg_sample.resize(nw*narg*update_steps,0);
-				all_p_rc_sample1.resize(nw*update_steps,0);
-				all_p_rc_sample2.resize(nw*update_steps,0);
+				all_rc_arg_sample.resize(tot_data_size*narg,0);
+				all_p_rc_sample1.resize(tot_data_size,0);
+				all_p_rc_sample2.resize(tot_data_size,0);
 			}
 			
 			if(comm.Get_rank()==0)
@@ -1106,7 +1153,7 @@ void Opt_TALOS::update()
 			{
 				if(multi_sim_comm.Get_rank()==0)
 				{
-					dwloss=update_Dw(all_input_rc,vec_fw);
+					dwloss=update_value_network(all_input_rc,vec_fw);
 					if(opt_rc)
 						vbloss=update_bias_and_rc(all_input_bias,
 							all_rc_arg_sample,all_p_rc_sample1,
@@ -1148,7 +1195,7 @@ void Opt_TALOS::update()
 		{
 			if(comm.Get_rank()==0)
 			{
-				dwloss=update_Dw(input_rc,vec_fw);
+				dwloss=update_value_network(input_rc,vec_fw);
 				if(opt_rc)
 					vbloss=update_bias_and_rc(input_bias,rc_arg_sample,
 						p_rc_sample1,p_rc_sample2,vec_fw);
@@ -1240,6 +1287,7 @@ void Opt_TALOS::update()
 			//~ odebug.flush();
 		//~ }
 
+		coe_now.resize(0);
 		unsigned id=0;
 		for(unsigned i=0;i!=nbiases;++i)
 		{
@@ -1251,6 +1299,7 @@ void Opt_TALOS::update()
 				else
 					coe[j]=new_coe[id++];
 			}
+			coe_now.push_back(coe);
 			Coeffs(i).setValues(coe);
 
 			unsigned int curr_iter = getIterationCounter()+1;
@@ -1275,11 +1324,28 @@ void Opt_TALOS::update()
 				getBiasPntrs()[i]->updateReweightFactor();
 			}
 		}
+		
+		//
+		if(isBiasOutputActive() && getIterationCounter()%getBiasOutputStride()==0) {
+			writeBiasOutputFiles();
+		}
+		if(isFesOutputActive() && getIterationCounter()%getFesOutputStride()==0) {
+			writeFesOutputFiles();
+		}
+		if(isFesProjOutputActive() && getIterationCounter()%getFesProjOutputStride()==0) {
+			writeFesProjOutputFiles();
+		}
+		if(isTargetDistOutputActive() && getIterationCounter()%getTargetDistOutputStride()==0) {
+			writeTargetDistOutputFiles();
+		}
+		if(isTargetDistProjOutputActive() && getIterationCounter()%getTargetDistProjOutputStride()==0) {
+			writeTargetDistProjOutputFiles();
+		}
 	}
 }
 
-// training the parameter of discriminator
-float Opt_TALOS::update_Dw(const std::vector<float>& all_input_rc,std::vector<std::vector<float>>& vec_fw)
+// training the parameter of discriminator (value network)
+float Opt_TALOS::update_value_network(const std::vector<float>& all_input_rc,std::vector<std::vector<float>>& vec_fw)
 {
 	ComputationGraph cg;
 	Dim xs_dim({target_dim},batch_size);
@@ -1302,13 +1368,15 @@ float Opt_TALOS::update_Dw(const std::vector<float>& all_input_rc,std::vector<st
 	Expression loss_sample=mean_batches(y_sample);
 	Expression loss_target=mean_batches(l_target);
 
-	Expression loss_Dw=loss_sample-loss_target;
+	Expression loss_Dw;
 	
 	if(do_quadratic)
 	{
-		Expression loss_sample2=lambda*loss_sample*loss_sample;
-		loss_Dw=loss_Dw+loss_sample2;
+		Expression loss_sample2 = lambda * loss_sample * loss_sample;
+		loss_Dw = loss_sample - loss_target + loss_sample2;
 	}
+	else
+		loss_Dw = loss_sample - loss_target;
 	
 	double dwloss=0;
 	double loss;
@@ -1323,7 +1391,8 @@ float Opt_TALOS::update_Dw(const std::vector<float>& all_input_rc,std::vector<st
 		cg.backward(loss_Dw);
 		train_Dw->update();
 		//~ std::cout<<"Loss = "<<loss<<std::endl;
-		nn_Dw.clip(clip_left,clip_right);
+		if(do_clip)
+			nn_Dw.clip(clip_left,clip_right);
 	}
 	dwloss/=nepoch;
 	
@@ -1339,6 +1408,17 @@ float Opt_TALOS::update_Dw(const std::vector<float>& all_input_rc,std::vector<st
 // update the coeffients of the basis function
 float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std::vector<std::vector<float>>& vec_fw)
 {
+	float avg_fw=0;
+	if(use_full_loss)
+	{
+		for(unsigned i=0;i!=vec_fw.size();++i)
+		{
+			for(unsigned j=0;j!=vec_fw[i].size();++j)
+				avg_fw+=vec_fw[i][j];
+		}
+		avg_fw/=tot_data_size;
+	}
+	
 	ComputationGraph cg;
 	Expression W = parameter(cg,parm_bias);
 	Dim bias_dim({tot_basis},batch_size),fw_dim({1},batch_size);
@@ -1348,9 +1428,16 @@ float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std:
 	Expression y_pred = W * x;
 	std::vector<float> fw_batch;
 	Expression fw = input(cg,fw_dim,&fw_batch);
+	Expression loss_mean = mean_batches(fw * y_pred);
 	
-	Expression loss_bias = beta * fw * y_pred;
-	Expression loss_mean = mean_batches(loss_bias);
+	Expression loss_fin;
+	if(use_full_loss)
+	{
+		Expression loss_mean2 = mean_batches(avg_fw * y_pred);
+		loss_fin = beta * (loss_mean + loss_mean2);
+	}
+	else
+		loss_fin = beta * loss_mean;
 
 	double vbloss=0;
 	for(unsigned i=0;i!=nepoch;++i)
@@ -1358,8 +1445,8 @@ float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std:
 		fw_batch=vec_fw[i];
 		for(unsigned j=0;j!=bsize;++j)
 			basis_batch[j]=all_input_bias[i*bsize+j];
-		vbloss += as_scalar(cg.forward(loss_mean));
-		cg.backward(loss_mean);
+		vbloss += as_scalar(cg.forward(loss_fin));
+		cg.backward(loss_fin);
 		train_bias->update();
 	}
 	vbloss/=nepoch;

@@ -63,7 +63,6 @@ private:
 	bool is_debug;
 	bool opt_const;
 	bool opt_rc;
-	bool do_quadratic;
 	
 	unsigned random_seed;
 	
@@ -85,6 +84,11 @@ private:
 	unsigned num_exp_parm;
 	unsigned num_fix_parm;
 	
+	unsigned tot_data_size;
+	unsigned tot_basis_size;
+	unsigned tot_in_size;
+	unsigned tot_out_size;
+	
 	const long double PI=3.14159265358979323846264338327950288419716939937510582;
 	
 	double kB;
@@ -94,8 +98,6 @@ private:
 	
 	double clip_threshold_bias;
 	double clip_threshold_curi;
-	
-	float lambda;
 	
 	float clip_left;
 	float clip_right;
@@ -196,9 +198,9 @@ void Opt_Curiosity::registerKeywords(Keywords& keys) {
   keys.add("compulsory","FIX_HIDDEN_ACTIVE","RELU","active function of each hidden layer for fixed neural network");
   keys.add("compulsory","CLIP_LEFT","-0.01","the left value to clip");
   keys.add("compulsory","CLIP_RIGHT","0.01","the right value to clip");
-  keys.add("compulsory","EXP_NN_FILE","nn_exp.data","file name of the coefficients of exploratory neural network");
-  keys.add("compulsory","EXP_NN_STRIDE","1","the frequency (how many period of update) to out the coefficients of exploratory neural network");
-  keys.add("compulsory","FIX_NN_FILE","nn_fix.data","file name of the coefficients of discriminator");
+  keys.add("compulsory","NN_EXP_FILE","nn_exp.data","file name of the coefficients of exploratory neural network");
+  keys.add("compulsory","NN_EXP_STRIDE","1","the frequency (how many period of update) to out the coefficients of exploratory neural network");
+  keys.add("compulsory","NN_FIX_FILE","nn_fix.data","file name of the coefficients of discriminator");
   keys.addFlag("OPT_RC",false,"optimize reaction coordinate during the iteration");
   keys.add("optional","ARG_PERIODIC","if the arguments are periodic or not");
   keys.addFlag("OPT_CONST_PARAM",false,"also to optimize the constant part of the basis functions");
@@ -309,11 +311,6 @@ Opt_Curiosity::Opt_Curiosity(const ActionOptions&ao):
 	parse("NN_FIX_FILE",nn_fix_file);
 	parse("NN_EXP_FILE",nn_exp_file);
 	parse("NN_EXP_STRIDE",nn_exp_stride);
-
-	do_quadratic=false;
-	parse("QUADRATIC_FACTOR",lambda);
-	if(lambda>1e-38)
-		do_quadratic=true;
 	
 	parseFlag("OPT_CONST_PARAM",opt_const);
 	
@@ -523,6 +520,11 @@ Opt_Curiosity::Opt_Curiosity(const ActionOptions&ao):
 		nepoch*=nw;
 	}
 	
+	tot_data_size=update_steps*nw;
+	tot_basis_size=tot_data_size*tot_basis;
+	tot_in_size=tot_data_size*nn_input_dim;
+	tot_out_size=tot_data_size*nn_output_dim;
+	
 	TextFileSaver saver(nn_fix_file);
 	saver.save(pc_fix);
 	
@@ -559,10 +561,6 @@ Opt_Curiosity::Opt_Curiosity(const ActionOptions&ao):
 	}
 
 	log.printf("  Use %s to train the curiosity\n",fullname_curi.c_str());
-	if(do_quadratic)
-		log.printf("    with quadratic term factor: %f\n",lambda);
-	else
-		log.printf("    without using quadratic term factor.\n");
 	if(lr_curi.size()>0)
 	{
 		log.printf("    with learning rates:");
@@ -730,8 +728,8 @@ void Opt_Curiosity::update()
 			std::vector<float> all_input_rc;
 			std::vector<float> all_input_bias;
 			
-			all_input_rc.resize(nw*nn_input_dim*update_steps,0);
-			all_input_bias.resize(nw*tot_basis*update_steps,0);
+			all_input_rc.resize(tot_in_size,0);
+			all_input_bias.resize(tot_basis_size,0);
 			
 			if(comm.Get_rank()==0)
 			{
@@ -846,6 +844,17 @@ void Opt_Curiosity::update()
 				getBiasPntrs()[i]->updateReweightFactor();
 			}
 		}
+		
+		//
+		if(isBiasOutputActive() && getIterationCounter()%getBiasOutputStride()==0) {
+			writeBiasOutputFiles();
+		}
+		if(isFesOutputActive() && getIterationCounter()%getFesOutputStride()==0) {
+			writeFesOutputFiles();
+		}
+		if(isFesProjOutputActive() && getIterationCounter()%getFesProjOutputStride()==0) {
+			writeFesProjOutputFiles();
+		}
 	}
 }
 
@@ -870,7 +879,7 @@ float Opt_Curiosity::update_curiosity(const std::vector<float>& all_input_rc,std
 	Expression y_fixed=input(cg,output_dim,&output_fixed);
 	
 	Expression sw=l2_norm(y_explore-y_fixed);
-	Expression loss_curiosity=mean_batches(sw);
+	Expression loss_sw=sum_batches(sw);
 	
 	double swloss=0;
 	double loss;
@@ -880,9 +889,9 @@ float Opt_Curiosity::update_curiosity(const std::vector<float>& all_input_rc,std
 		for(unsigned j=0;j!=in_size;++j)
 			input_explore[j]=all_input_rc[i*in_size+j];
 		vec_input_explore.push_back(input_explore);
-		loss = as_scalar(cg.forward(loss_curiosity));
+		loss = as_scalar(cg.forward(loss_sw));
 		swloss += loss;
-		cg.backward(loss_curiosity);
+		cg.backward(loss_sw);
 		train_curi->update();
 		//~ nn_curi.clip(clip_left,clip_right);
 	}
@@ -932,6 +941,14 @@ std::vector<std::vector<float>> Opt_Curiosity::get_fixed_value(const std::vector
 // update the coeffients of the basis function
 float Opt_Curiosity::update_bias(const std::vector<float>& all_input_bias,const std::vector<std::vector<float>>& vec_Sw)
 {
+	float avg_sw=0;
+	for(unsigned i=0;i!=vec_Sw.size();++i)
+	{
+		for(unsigned j=0;j!=vec_Sw[i].size();++j)
+			avg_sw+=vec_Sw[i][j];
+	}
+	avg_sw/=tot_data_size;
+	
 	ComputationGraph cg;
 	Expression W = parameter(cg,parm_bias);
 	Dim bias_dim({tot_basis},batch_size),sw_dim({1},batch_size);
@@ -942,17 +959,19 @@ float Opt_Curiosity::update_bias(const std::vector<float>& all_input_bias,const 
 	std::vector<float> sw_batch;
 	Expression sw = input(cg,sw_dim,&sw_batch);
 	
-	Expression loss_bias = beta * sw * y_pred;
-	Expression loss_mean = mean_batches(loss_bias);
-
+	Expression loss_mean1 = mean_batches(sw * y_pred);
+	Expression loss_mean2 = mean_batches(avg_sw * y_pred);
+	
+	Expression loss_fin = beta * (loss_mean1 - loss_mean2);
+	
 	double vbloss=0;
 	for(unsigned i=0;i!=nepoch;++i)
 	{
 		sw_batch=vec_Sw[i];
 		for(unsigned j=0;j!=bsize;++j)
 			basis_batch[j]=all_input_bias[i*bsize+j];
-		vbloss += as_scalar(cg.forward(loss_mean));
-		cg.backward(loss_mean);
+		vbloss += as_scalar(cg.forward(loss_fin));
+		cg.backward(loss_fin);
 		train_bias->update();
 	}
 	vbloss/=nepoch;
