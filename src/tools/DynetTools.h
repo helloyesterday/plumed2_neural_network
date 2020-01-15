@@ -24,26 +24,116 @@
 #include <dynet/expr.h>
 #include <dynet/io.h>
 
+namespace PLMD {
 namespace dytools {
 
-using namespace dynet;
-
-Trainer* new_traniner(const std::string& algorithm,ParameterCollection& pc,std::string& fullname);
-Trainer* new_traniner(const std::string& algorithm,ParameterCollection& pc,const std::vector<float>& params,std::string& fullname);
+dynet::Trainer* new_traniner(const std::string& algorithm,dynet::ParameterCollection& pc,std::string& fullname);
+dynet::Trainer* new_traniner(const std::string& algorithm,dynet::ParameterCollection& pc,const std::vector<float>& params,std::string& fullname);
 
 /**
  * \ingroup ffbuilders
  * Common activation functions used in multilayer perceptrons
  */
 enum Activation {
-  SIGMOID, /**< `SIGMOID` : Sigmoid function \f$x\longrightarrow \frac {1} {1+e^{-x}}\f$ */
-  TANH, /**< `TANH` : Tanh function \f$x\longrightarrow \frac {1-e^{-2x}} {1+e^{-2x}}\f$ */
-  RELU, /**< `RELU` : Rectified linear unit \f$x\longrightarrow \max(0,x)\f$ */
-  LINEAR, /**< `LINEAR` : Identity function \f$x\longrightarrow x\f$ */
-  SOFTMAX /**< `SOFTMAX` : Softmax function \f$\textbf{x}=(x_i)_{i=1,\dots,n}\longrightarrow \frac {e^{x_i}}{\sum_{j=1}^n e^{x_j} })_{i=1,\dots,n}\f$ */
+	LINEAR, /**< `LINEAR` : Identity function \f$x\longrightarrow x\f$ */
+	RELU, /**< `RELU` : Rectified linear unit \f$x\longrightarrow \max(0,x)\f$ */
+	ELU, /**< `ELU` : Exponential linear unit \f$x\longrightarrow \alpha*(e^{x}-1)\f$ */
+	SMOOTH_ELU, /**< `SMOOTH_ELU` : Smooth ELU \f$x\longrightarrow log(e^{alpha}*e^{x}+1)-alpha\f$ */
+	SIGMOID, /**< `SIGMOID` : Sigmoid function \f$x\longrightarrow \frac {1} {1+e^{-x}}\f$ */
+	SWISH,  /**< `SWISH` : Swish function \f$x\longrightarrow \frac {x} {1+e^{-x}}\f$ */
+	TANH, /**< `TANH` : Tanh function \f$x\longrightarrow \frac {1-e^{-2x}} {1+e^{-2x}}\f$ */
+	ASINH, /**< `ASINH` : Inverse hyperbolic sine \f$x\longrightarrow asinh(x)\f$ */
+	SOFTMAX, /**< `SOFTMAX` : Softmax function \f$\textbf{x}=(x_i)_{i=1,\dots,n}\longrightarrow \frac {e^{x_i}}{\sum_{j=1}^n e^{x_j} })_{i=1,\dots,n}\f$ */
+	SOFTPLUS, /**< `SOFTPLUS` : Softplus function \f$x\longrightarrow log(e^{x}+1)\f$ */
+	SHIFTED_SOFTPLUS, /**< `SHIFTED_SOFTPLUS` : Shifted softplus function (SSP) \f$x\longrightarrow log(0.5*e^{x}+0.5)\f$ */
+	SCALED_SHIFTED_SOFTPLUS, /**< `SCALED_SHIFTED_SOFTPLUS` : Scaled shifted softplus function (SSSP) \f$x\longrightarrow 2*log(0.5*e^{x}+0.5)\f$ */
+	SELF_NORMALIZING_SHIFTED_SOFTPLUS, /**< `SELF_NORMALIZING_SHIFTED_SOFTPLUS` : Self normalizing softplus function (SNSP) \f$x\longrightarrow 1.875596256135042*log(0.5*e^{x}+0.5)\f$ */
+	SELF_NORMALIZING_SMOOTH_ELU, /**< `SELF_NORMALIZING_SMOOTH_ELU` : Self normalizing smooth ELU (SNSELU) \f$x\longrightarrow 1.574030675714671*(log(e^{alpha}*e^{x}+1)-alpha)\f$ */
+	SELF_NORMALIZING_TANH, /**< `SELF_NORMALIZING_TANH` : Self normalizing tanh (SNTANH) \f$x\longrightarrow 1.592537419722831*tanh(x)\f$ */
+	SELF_NORMALIZING_ASINH /**< `SELF_NORMALIZING_ASINH` : Self normalizing asinh (SNASINH) \f$x\longrightarrow 1.256734802399369*asinh(x)\f$ */
 };
 
 Activation activation_function(const std::string& a);
+
+inline dynet::Expression dy_log1p(dynet::Expression x)
+{
+	return dynet::log(x+1.0);
+}
+
+inline dynet::Expression dy_softplus(dynet::Expression x)
+{
+	return dy_log1p(dynet::exp(x));
+}
+
+inline dynet::Expression dy_shifted_softplus(dynet::Expression x)
+{
+	return dynet::log(0.5*dynet::exp(x)+0.5);
+}
+
+inline dynet::Expression dy_smooth_elu(dynet::Expression x)
+{
+	return dy_log1p(1.718281828459045*dynet::exp(x))-1.0;
+}
+
+inline dynet::Expression dy_act_fun(dynet::Expression h, Activation f)
+{
+	switch (f)
+	{
+	case LINEAR:
+		return h;
+		break;
+	case RELU:
+		return dynet::rectify(h);
+		break;
+	case ELU:
+		return dynet::elu(h);
+		break;
+	case SMOOTH_ELU:
+		return dy_smooth_elu(h);
+		break;
+	case SIGMOID:
+		return dynet::logistic(h);
+		break;
+	case SWISH:
+		return dynet::silu(h);
+		break;
+	case TANH:
+		return dynet::tanh(h);
+		break;
+	case ASINH:
+		return dynet::asinh(h);
+		break;
+	case SOFTMAX:
+		return dynet::softmax(h);
+		break;
+	case SOFTPLUS:
+		return dy_softplus(h);
+		break;
+	case SHIFTED_SOFTPLUS:
+		return dy_shifted_softplus(h);
+		break;
+	case SCALED_SHIFTED_SOFTPLUS:
+		return 2*dy_shifted_softplus(h);
+		break;
+	case SELF_NORMALIZING_SHIFTED_SOFTPLUS:
+		return 1.875596256135042*dy_shifted_softplus(h);
+		break;
+	case SELF_NORMALIZING_SMOOTH_ELU:
+		return 1.574030675714671*dy_smooth_elu(h);
+		break;
+	case SELF_NORMALIZING_TANH:
+		return 1.592537419722831*dynet::tanh(h);
+		break;
+	case SELF_NORMALIZING_ASINH:
+		return 1.256734802399369*dynet::asinh(h);
+		break;
+    default:
+		throw std::invalid_argument("Unknown activation function");
+		break;
+	}
+}
+
+void dynet_initialization(unsigned random_seed);
 
 /**
  * \ingroup ffbuilders
@@ -98,7 +188,7 @@ protected:
   // Layers
   std::vector<Layer> layers;
   // Parameters
-  std::vector<std::vector<Parameter>> params;
+  std::vector<std::vector<dynet::Parameter>> params;
   std::vector<std::vector<unsigned>> params_size;
 
   bool dropout_active = true;
@@ -122,16 +212,16 @@ public:
    * \brief Default constructor
    * \details Dont forget to add layers!
    */
-  explicit MLP(ParameterCollection & model):LAYERS(0){}
+  explicit MLP(dynet::ParameterCollection & model):LAYERS(0){}
   
   /**
    * \brief Returns a Multilayer perceptron
    * \details Creates a feedforward multilayer perceptron based on a list of layer descriptions
    *
-   * \param model ParameterCollection to contain parameters
+   * \param model dynet::ParameterCollection to contain parameters
    * \param layers Layers description
    */
-  explicit MLP(ParameterCollection& model,std::vector<Layer> layers);
+  explicit MLP(dynet::ParameterCollection& model,std::vector<Layer> layers);
   
   /**
    * \brief Append a layer at the end of the network
@@ -140,7 +230,7 @@ public:
    * \param model [description]
    * \param layer [description]
    */
-  void append(ParameterCollection& model, Layer layer);
+  void append(dynet::ParameterCollection& model, Layer layer);
   
     /**
    * \brief Run the MLP on an input vector/batch
@@ -150,7 +240,7 @@ public:
    *
    * \return [description]
    */
-  Expression run(Expression x,ComputationGraph& cg);
+  dynet::Expression run(dynet::Expression x,dynet::ComputationGraph& cg);
                  
   /**
    * \brief Run the MLP on an input vector/batch
@@ -160,7 +250,7 @@ public:
    *
    * \return [description]
    */
-  Expression get_grad(Expression x,ComputationGraph& cg);
+  dynet::Expression get_grad(dynet::Expression x,dynet::ComputationGraph& cg);
   
   /**
    * \brief Return the negative log likelihood for the (batched) pair (x,y)
@@ -169,9 +259,9 @@ public:
    * \param x Input batch
    * \param labels Output labels
    * \param cg Computation graph
-   * \return Expression for the negative log likelihood on the batch
+   * \return dynet::Expression for the negative log likelihood on the batch
    */
-  Expression get_nll(Expression x,std::vector<unsigned> labels,ComputationGraph& cg);
+  dynet::Expression get_nll(dynet::Expression x,std::vector<unsigned> labels,dynet::ComputationGraph& cg);
   
   /**
    * \brief Predict the most probable label
@@ -182,7 +272,7 @@ public:
    *
    * \return Label index
    */
-  int predict(Expression x,ComputationGraph& cg);
+  int predict(dynet::Expression x,dynet::ComputationGraph& cg);
   
     /**
    * \brief Enable dropout
@@ -213,8 +303,8 @@ public:
   std::vector<float> get_parameters();
 
 private:
-  inline Expression activate(Expression h, Activation f);
-  inline Expression activate_grad(Expression h, Activation f);
+  //~ inline dynet::Expression activate(dynet::Expression h, Activation f);
+  //~ inline dynet::Expression activate_grad(dynet::Expression h, Activation f);
 };
 
 class WGAN {
@@ -231,9 +321,9 @@ public:
 
 	unsigned batch_size() const {return bsize;}
 	void set_batch_size(unsigned new_size) {bsize=new_size;}
-	float update(Trainer& trainer);
+	float update(dynet::Trainer& trainer);
 private:
-	ComputationGraph cg;
+	dynet::ComputationGraph cg;
 	MLP nn;
 	unsigned bsize;
 	unsigned ntarget;
@@ -241,11 +331,11 @@ private:
 	float clip_min;
 	float clip_max;
 	
-	Expression x_sample;
-	Expression x_target;
-	Expression y_sample;
-	Expression y_target;
-	Expression loss_expr;
+	dynet::Expression x_sample;
+	dynet::Expression x_target;
+	dynet::Expression y_sample;
+	dynet::Expression y_target;
+	dynet::Expression loss_expr;
 	
 	void set_expression(std::vector<dynet::real>& x_svalues,
 		std::vector<dynet::real>& x_tvalues,
@@ -255,6 +345,7 @@ private:
 };
 
 
+}
 }
 
 #endif

@@ -11,34 +11,76 @@
 
 #include "DynetTools.h"
 
+namespace PLMD {
 namespace dytools {
 
-using namespace dynet;
+//~ using namespace dynet;
 
 Activation activation_function(const std::string& a)
 {
-	if(a=="SIGMOID"||a=="sigmoid"||a=="Sigmoid")
-		return Activation::SIGMOID;
-	if(a=="TANH"||a=="tanh"||a=="Tanh")
-		return Activation::TANH;
-	if(a=="RELU"||a=="relu"||a=="Relu"||a=="ReLU")
-		return Activation::RELU;
 	if(a=="LINEAR"||a=="linear"||a=="Linear")
 		return Activation::LINEAR;
+	if(a=="RELU"||a=="relu"||a=="Relu"||a=="ReLU")
+		return Activation::RELU;
+	if(a=="ELU"||a=="elu"||a=="EXPLU"||a=="ExpLu")
+		return Activation::ELU;
+	if(a=="SMOOTH_ELU"||a=="Smooth_ELU"||a=="smooth_elu"||a=="SELU")
+		return Activation::SMOOTH_ELU;
+	if(a=="SIGMOID"||a=="sigmoid"||a=="Sigmoid")
+		return Activation::SIGMOID;
+	if(a=="SWISH"||a=="Swish"||a=="swish"||a=="silu"||a=="SILU"||a=="sil"||a=="SiL")
+		return Activation::SWISH;
+	if(a=="TANH"||a=="tanh"||a=="Tanh")
+		return Activation::TANH;
+	if(a=="ASINH"||a=="Asinh"||a=="asinh")
+		return Activation::ASINH;
 	if(a=="SOFTMAX"||a=="softmax"||a=="Softmax"||a=="SoftMax"||a=="SoftMAX")
 		return Activation::SOFTMAX;
+	if(a=="SOFTPLUS"||a=="softplus"||a=="Softplus"||a=="SoftPlus"||a=="SP")
+		return Activation::SOFTPLUS;
+	if(a=="SHIFTED_SOFTPLUS"||a=="shifted_softplus"||a=="Shifted_softplus"||
+		a=="Shifted_Softplus"||a=="SSP")
+		return Activation::SHIFTED_SOFTPLUS;
+	if(a=="SCALED_SHIFTED_SOFTPLUS"||a=="scaled_shifted_softplus"||
+		a=="Scaled_shifted_softplus"||a=="Scaled_Shifted_Softplus"||a=="SSSP")
+		return Activation::SCALED_SHIFTED_SOFTPLUS;
+	if(a=="SELF_NORMALIZING_SHIFTED_SOFTPLUS"||a=="self_normalizing_shifted_softplus"||
+		a=="Self_normalizing_shifted_softplus"||a=="Self_Normalizing_Shifted_Softplus"||a=="SNSP")
+		return Activation::SELF_NORMALIZING_SHIFTED_SOFTPLUS;
+	if(a=="SELF_NORMALIZING_SMOOTH_ELU"||a=="Self_normalizing_ELU"||
+		a=="self_normalizing_ELU"||a=="self_normalizing_elu"||a=="SNELU")
+		return Activation::SELF_NORMALIZING_SMOOTH_ELU;
+	if(a=="SELF_NORMALIZING_TANH"||a=="Self_normalizing_TANH"||
+		a=="self_normalizing_tanh"||a=="SNtanh"||a=="SNtanh")
+		return Activation::SELF_NORMALIZING_TANH;
+	if(a=="SELF_NORMALIZING_ASINH"||a=="Self_normalizing_ASINH"||
+		a=="self_normalizing_asinh"||a=="SNasinh"||a=="SNASINH")
+		return Activation::SELF_NORMALIZING_ASINH;
 	std::cerr<<"ERROR! Can't recognize the activation function "+a<<std::endl;
 	exit(-1);
+}
+
+void dynet_initialization(unsigned random_seed)
+{
+	int cc=1;
+	char pp[]="plumed";
+	char *vv[]={pp};
+	char** ivv=vv;
+	dynet::DynetParams params = dynet::extract_dynet_params(cc,ivv,true);
+
+	params.random_seed=random_seed;
+	
+	dynet::initialize(params);
 }
 
   /**
    * \brief Returns a Multilayer perceptron
    * \details Creates a feedforward multilayer perceptron based on a list of layer descriptions
    *
-   * \param model ParameterCollection to contain parameters
+   * \param model dynet::ParameterCollection to contain parameters
    * \param layers Layers description
    */
-MLP::MLP(ParameterCollection& model,std::vector<Layer> layers)
+MLP::MLP(dynet::ParameterCollection& model,std::vector<Layer> layers)
 {
     // Verify layers compatibility
     for (unsigned l = 0; l < layers.size() - 1; ++l) {
@@ -59,7 +101,7 @@ MLP::MLP(ParameterCollection& model,std::vector<Layer> layers)
    * \param model [description]
    * \param layer [description]
    */
-void MLP::append(ParameterCollection& model, Layer layer)
+void MLP::append(dynet::ParameterCollection& model, Layer layer)
 {
     // Check compatibility
     if (LAYERS > 0)
@@ -75,8 +117,8 @@ void MLP::append(ParameterCollection& model, Layer layer)
     layers.push_back(layer);
     LAYERS++;
     // Register parameters
-    Parameter W = model.add_parameters({layer.output_dim, layer.input_dim});
-    Parameter b = model.add_parameters({layer.output_dim});
+    dynet::Parameter W = model.add_parameters({layer.output_dim, layer.input_dim});
+    dynet::Parameter b = model.add_parameters({layer.output_dim});
     params.push_back({W, b});
     unsigned nw = layer.output_dim * layer.input_dim;
     unsigned nb = layer.output_dim;
@@ -93,24 +135,24 @@ void MLP::append(ParameterCollection& model, Layer layer)
    *
    * \return [description]
    */
-Expression MLP::run(Expression x,ComputationGraph& cg)
+dynet::Expression MLP::run(dynet::Expression x,dynet::ComputationGraph& cg)
 {
-    // Expression for the current hidden state
-    Expression h_cur = x;
+    // dynet::Expression for the current hidden state
+    dynet::Expression h_cur = x;
     for (unsigned l = 0; l < LAYERS; ++l) {
       // Initialize parameters in computation graph
-      Expression W = parameter(cg, params[l][0]);
-      Expression b = parameter(cg, params[l][1]);
+      dynet::Expression W = dynet::parameter(cg, params[l][0]);
+      dynet::Expression b = dynet::parameter(cg, params[l][1]);
       // Aplly affine transform
-      Expression a = affine_transform({b, W, h_cur});
+      dynet::Expression a = dynet::affine_transform({b, W, h_cur});
       // Apply activation function
-      Expression h = activate(a, layers[l].activation);
+      dynet::Expression h = dy_act_fun(a, layers[l].activation);
       // Take care of dropout
-      Expression h_dropped;
+      dynet::Expression h_dropped;
       if (layers[l].dropout_rate > 0) {
         if (dropout_active) {
           // During training, drop random units
-          Expression mask = random_bernoulli(cg, {layers[l].output_dim}, 1 - layers[l].dropout_rate);
+          dynet::Expression mask = random_bernoulli(cg, {layers[l].output_dim}, 1 - layers[l].dropout_rate);
           h_dropped = cmult(h, mask);
         } else {
           // At test time, multiply by the retention rate to scale
@@ -126,82 +168,6 @@ Expression MLP::run(Expression x,ComputationGraph& cg)
 
     return h_cur;
 }
-
-  /**
-   * \brief Run the MLP on an input vector/batch
-   *
-   * \param x Input expression (vector or batch)
-   * \param cg Computation graph
-   *
-   * \return [description]
-   */
-Expression MLP::get_grad(Expression x,ComputationGraph& cg)
-{
-    // Expression for the current hidden state
-    Expression h_cur = x;
-    std::vector<Expression> a_vec;
-    for (unsigned l = 0; l < LAYERS; ++l) {
-      // Initialize parameters in computation graph
-      Expression W = parameter(cg, params[l][0]);
-      Expression b = parameter(cg, params[l][1]);
-      // Aplly affine transform
-      Expression a = affine_transform({b, W, h_cur});
-      
-      a_vec.push_back(a);
-      
-      // Apply activation function
-      Expression h = activate(a, layers[l].activation);
-      // Take care of dropout
-      Expression h_dropped;
-      if (layers[l].dropout_rate > 0) {
-        if (dropout_active) {
-          // During training, drop random units
-          Expression mask = random_bernoulli(cg, {layers[l].output_dim}, 1 - layers[l].dropout_rate);
-          h_dropped = cmult(h, mask);
-        } else {
-          // At test time, multiply by the retention rate to scale
-          h_dropped = h * (1 - layers[l].dropout_rate);
-        }
-      } else {
-        // If there's no dropout, don't do anything
-        h_dropped = h;
-      }
-      // Set current hidden state
-      h_cur = h_dropped;
-    }
-    
-    Expression y_grad;
-    for (unsigned l = 0; l < LAYERS; ++l) {
-      unsigned id=LAYERS-1-l;
-      std::cout<<id<<std::endl;
-      Expression W = parameter(cg, params[id][0]);
-      std::cout<<W.dim()<<std::endl;
-      if(l==0)
-      {
-        if(layers[id].activation==LINEAR)
-		  y_grad = W;
-		else
-		{
-          Expression h_grad=activate_grad(a_vec[id],layers[id].activation);
-          y_grad = h_grad * W;
-		}
-	  }
-      else
-      {
-        Expression g_cur=y_grad;
-        if(layers[id].activation!=LINEAR)
-        {
-	      Expression h_grad=activate_grad(a_vec[id],layers[id].activation);
-          g_cur = y_grad * h_grad;
-        }
-        y_grad = g_cur * W;
-	  }
-    }
-    Expression tt=transpose(y_grad);
-	std::cout<<tt.dim()<<std::endl;
-	
-    return y_grad;
-}
   
   /**
    * \brief Return the negative log likelihood for the (batched) pair (x,y)
@@ -210,14 +176,14 @@ Expression MLP::get_grad(Expression x,ComputationGraph& cg)
    * \param x Input batch
    * \param labels Output labels
    * \param cg Computation graph
-   * \return Expression for the negative log likelihood on the batch
+   * \return dynet::Expression for the negative log likelihood on the batch
    */
-Expression MLP::get_nll(Expression x,std::vector<unsigned> labels,ComputationGraph& cg)
+dynet::Expression MLP::get_nll(dynet::Expression x,std::vector<unsigned> labels,dynet::ComputationGraph& cg)
 {
     // compute output
-    Expression y = run(x, cg);
+    dynet::Expression y = run(x, cg);
     // Do softmax
-    Expression losses = pickneglogsoftmax(y, labels);
+    dynet::Expression losses = pickneglogsoftmax(y, labels);
     // Sum across batches
     return sum_batches(losses);
 }
@@ -231,10 +197,10 @@ Expression MLP::get_nll(Expression x,std::vector<unsigned> labels,ComputationGra
    *
    * \return Label index
    */
-int MLP::predict(Expression x,ComputationGraph& cg)
+int MLP::predict(dynet::Expression x,dynet::ComputationGraph& cg)
 {
     // run MLP to get class distribution
-    Expression y = run(x, cg);
+    dynet::Expression y = run(x, cg);
     // Get values
     std::vector<float> probs = as_vector(cg.forward(y));
     // Get argmax
@@ -305,59 +271,6 @@ void MLP::set_parameters(const std::vector<float>& param_values)
 	}
 }
 
-inline Expression MLP::activate(Expression h, Activation f)
-{
-    switch (f) {
-    case LINEAR:
-      return h;
-      break;
-    case RELU:
-      return rectify(h);
-      break;
-    case SIGMOID:
-      return logistic(h);
-      break;
-    case TANH:
-      return tanh(h);
-      break;
-    case SOFTMAX:
-      return softmax(h);
-      break;
-    default:
-      throw std::invalid_argument("Unknown activation function");
-      break;
-    }
-}
-
-inline Expression MLP::activate_grad(Expression h, Activation f)
-{
-	Expression a;
-    switch (f) {
-    case LINEAR:
-      return ones(*(h.pg),h.dim());
-      break;
-    case RELU:
-      a=rectify(h);
-      return cdiv(a,a+std::numeric_limits<float>::epsilon());
-      break;
-    case SIGMOID:
-      a=logistic(h);
-      return cmult(a,1.0-a);
-      break;
-    case TANH:
-      a=tanh(h);
-      return 1.0-cmult(a,a);
-      break;
-    case SOFTMAX:
-      a=softmax(h);
-      return a*transpose(a);
-      break;
-    default:
-      throw std::invalid_argument("Unknown activation function");
-      break;
-    }
-  }
-
 WGAN::WGAN(MLP& _nn,unsigned _bsize,unsigned _ntarget,
 	std::vector<dynet::real>& x_svalues,
 	std::vector<dynet::real>& x_tvalues,
@@ -397,28 +310,28 @@ void WGAN::set_expression(std::vector<dynet::real>& x_svalues,
 	std::vector<dynet::real>& x_tvalues,
 	std::vector<dynet::real>& p_target)
 {
-	Dim xs_dim({nn.get_input_dim()},bsize);
-	Dim xt_dim({nn.get_input_dim()},ntarget);
-	Dim p_dim({1},ntarget);
+	dynet::Dim xs_dim({nn.get_input_dim()},bsize);
+	dynet::Dim xt_dim({nn.get_input_dim()},ntarget);
+	dynet::Dim p_dim({1},ntarget);
 	
 	x_sample=input(cg,xs_dim,&x_svalues);
 	x_target=input(cg,xt_dim,&x_tvalues);
-	Expression target_weights=input(cg,p_dim,&p_target);
+	dynet::Expression target_weights=input(cg,p_dim,&p_target);
 	
 	y_sample=nn.run(x_sample,cg);
 	y_target=nn.run(x_target,cg);
 	
-	Expression loss_sample=mean_elems(y_sample);
+	dynet::Expression loss_sample=mean_elems(y_sample);
 	// the target target distribution must be normalized!
-	Expression loss_target=dot_product(y_target,target_weights);
+	dynet::Expression loss_target=dot_product(y_target,target_weights);
 	loss_expr=loss_sample-loss_target;
 }
 
 void WGAN::set_expression(std::vector<dynet::real>& x_svalues,
 	std::vector<dynet::real>& x_tvalues)
 {
-	Dim xs_dim({nn.get_input_dim()},bsize);
-	Dim xt_dim({nn.get_input_dim()},ntarget);
+	dynet::Dim xs_dim({nn.get_input_dim()},bsize);
+	dynet::Dim xt_dim({nn.get_input_dim()},ntarget);
 	
 	x_sample=input(cg,xs_dim,&x_svalues);
 	x_target=input(cg,xt_dim,&x_tvalues);
@@ -426,13 +339,13 @@ void WGAN::set_expression(std::vector<dynet::real>& x_svalues,
 	y_sample=nn.run(x_sample,cg);
 	y_target=nn.run(x_target,cg);
 	
-	Expression loss_sample=mean_elems(y_sample);
-	Expression loss_target=mean_elems(y_target);
+	dynet::Expression loss_sample=mean_elems(y_sample);
+	dynet::Expression loss_target=mean_elems(y_target);
 	
 	loss_expr=loss_sample-loss_target;
 }
 
-float WGAN::update(Trainer& trainer)
+float WGAN::update(dynet::Trainer& trainer)
 {
 	float loss=as_scalar(cg.forward(loss_expr));
 	cg.backward(loss_expr,true);
@@ -440,60 +353,60 @@ float WGAN::update(Trainer& trainer)
 	return loss;
 }
 
-Trainer* new_traniner(const std::string& algorithm,ParameterCollection& pc,std::string& fullname)
+dynet::Trainer* new_traniner(const std::string& algorithm,dynet::ParameterCollection& pc,std::string& fullname)
 {
 	if(algorithm=="SimpleSGD"||algorithm=="simpleSGD"||algorithm=="simplesgd"||algorithm=="SGD"||algorithm=="sgd")
 	{
 		fullname="Stochastic gradient descent";
-		Trainer *trainer = new SimpleSGDTrainer(pc);
+		dynet::Trainer *trainer = new dynet::SimpleSGDTrainer(pc);
 		return trainer;
 	}
 	if(algorithm=="CyclicalSGD"||algorithm=="cyclicalSGD"||algorithm=="cyclicalsgd"||algorithm=="CSGD"||algorithm=="csgd")
 	{
 		fullname="Cyclical learning rate SGD";
-		Trainer *trainer = new CyclicalSGDTrainer(pc);
+		dynet::Trainer *trainer = new dynet::CyclicalSGDTrainer(pc);
 		return trainer;
 	}
 	if(algorithm=="MomentumSGD"||algorithm=="momentumSGD"||algorithm=="momentumSGD"||algorithm=="MSGD"||algorithm=="msgd")
 	{
 		fullname="SGD with momentum";
-		Trainer *trainer = new MomentumSGDTrainer(pc);
+		dynet::Trainer *trainer = new dynet::MomentumSGDTrainer(pc);
 		return trainer;
 	}
 	if(algorithm=="Adagrad"||algorithm=="adagrad"||algorithm=="adag"||algorithm=="ADAG")
 	{
 		fullname="Adagrad optimizer";
-		Trainer *trainer = new AdagradTrainer(pc);
+		dynet::Trainer *trainer = new dynet::AdagradTrainer(pc);
 		return trainer;
 	}
 	if(algorithm=="Adadelta"||algorithm=="adadelta"||algorithm=="AdaDelta"||algorithm=="AdaD"||algorithm=="adad"||algorithm=="ADAD")
 	{
 		fullname="AdaDelta optimizer";
-		Trainer *trainer = new AdadeltaTrainer(pc);
+		dynet::Trainer *trainer = new dynet::AdadeltaTrainer(pc);
 		return trainer;
 	}
 	if(algorithm=="RMSProp"||algorithm=="rmsprop"||algorithm=="rmsp"||algorithm=="RMSP")
 	{
 		fullname="RMSProp optimizer";
-		Trainer *trainer = new RMSPropTrainer(pc);
+		dynet::Trainer *trainer = new dynet::RMSPropTrainer(pc);
 		return trainer;
 	}
 	if(algorithm=="Adam"||algorithm=="adam"||algorithm=="ADAM")
 	{
 		fullname="Adam optimizer";
-		Trainer *trainer = new AdamTrainer(pc);
+		dynet::Trainer *trainer = new dynet::AdamTrainer(pc);
 		return trainer;
 	}
 	if(algorithm=="AMSGrad"||algorithm=="Amsgrad"||algorithm=="Amsg"||algorithm=="amsg")
 	{
 		fullname="AMSGrad optimizer";
-		Trainer *trainer = new AmsgradTrainer(pc);
+		dynet::Trainer *trainer = new dynet::AmsgradTrainer(pc);
 		return trainer;
 	}
 	return NULL;
 }
 
-Trainer* new_traniner(const std::string& algorithm,ParameterCollection& pc,const std::vector<float>& params,std::string& fullname)
+dynet::Trainer* new_traniner(const std::string& algorithm,dynet::ParameterCollection& pc,const std::vector<float>& params,std::string& fullname)
 {
 	if(params.size()==0)
 		return new_traniner(algorithm,pc,fullname);
@@ -501,102 +414,103 @@ Trainer* new_traniner(const std::string& algorithm,ParameterCollection& pc,const
 	if(algorithm=="SimpleSGD"||algorithm=="simpleSGD"||algorithm=="simplesgd"||algorithm=="SGD"||algorithm=="sgd")
 	{
 		fullname="Stochastic gradient descent";
-		Trainer *trainer = new SimpleSGDTrainer(pc,params[0]);
+		dynet::Trainer *trainer = new dynet::SimpleSGDTrainer(pc,params[0]);
 		return trainer;
 	}
 	if(algorithm=="CyclicalSGD"||algorithm=="cyclicalSGD"||algorithm=="cyclicalsgd"||algorithm=="CSGD"||algorithm=="csgd")
 	{
 		fullname="Cyclical learning rate SGD";
-		Trainer *trainer=NULL;
+		dynet::Trainer *trainer=NULL;
 		if(params.size()<2)
 		{
 			std::cerr<<"ERROR! CyclicalSGD needs at least two learning rates"<<std::endl;
 			exit(-1);
 		}
 		else if(params.size()==2)
-			trainer = new CyclicalSGDTrainer(pc,params[0],params[1]);
+			trainer = new dynet::CyclicalSGDTrainer(pc,params[0],params[1]);
 		else if(params.size()==3)
-			trainer = new CyclicalSGDTrainer(pc,params[0],params[1],params[2]);
+			trainer = new dynet::CyclicalSGDTrainer(pc,params[0],params[1],params[2]);
 		else if(params.size()==4)
-			trainer = new CyclicalSGDTrainer(pc,params[0],params[1],params[2],params[3]);
+			trainer = new dynet::CyclicalSGDTrainer(pc,params[0],params[1],params[2],params[3]);
 		else
-			trainer = new CyclicalSGDTrainer(pc,params[0],params[1],params[2],params[3],params[4]);
+			trainer = new dynet::CyclicalSGDTrainer(pc,params[0],params[1],params[2],params[3],params[4]);
 		return trainer;
 	}
 	if(algorithm=="MomentumSGD"||algorithm=="momentumSGD"||algorithm=="momentumSGD"||algorithm=="MSGD"||algorithm=="msgd")
 	{
 		fullname="SGD with momentum";
-		Trainer *trainer=NULL;
+		dynet::Trainer *trainer=NULL;
 		if(params.size()==1)
-			trainer = new MomentumSGDTrainer(pc,params[0]);
+			trainer = new dynet::MomentumSGDTrainer(pc,params[0]);
 		else
-			trainer = new MomentumSGDTrainer(pc,params[0],params[1]);
+			trainer = new dynet::MomentumSGDTrainer(pc,params[0],params[1]);
 		return trainer;
 	}
 	if(algorithm=="Adagrad"||algorithm=="adagrad"||algorithm=="adag"||algorithm=="ADAG")
 	{
 		fullname="Adagrad optimizer";
-		Trainer *trainer=NULL;
+		dynet::Trainer *trainer=NULL;
 		if(params.size()==1)
-			trainer = new AdagradTrainer(pc,params[0]);
+			trainer = new dynet::AdagradTrainer(pc,params[0]);
 		else
-			trainer = new AdagradTrainer(pc,params[0],params[1]);
+			trainer = new dynet::AdagradTrainer(pc,params[0],params[1]);
 		return trainer;
 	}
 	if(algorithm=="Adadelta"||algorithm=="adadelta"||algorithm=="AdaDelta"||algorithm=="AdaD"||algorithm=="adad"||algorithm=="ADAD")
 	{
 		fullname="AdaDelta optimizer";
-		Trainer *trainer=NULL;
+		dynet::Trainer *trainer=NULL;
 		if(params.size()==1)
-			trainer = new AdadeltaTrainer(pc,params[0]);
+			trainer = new dynet::AdadeltaTrainer(pc,params[0]);
 		else
-			trainer = new AdadeltaTrainer(pc,params[0],params[1]);
+			trainer = new dynet::AdadeltaTrainer(pc,params[0],params[1]);
 		return trainer;
 	}
 	if(algorithm=="RMSProp"||algorithm=="rmsprop"||algorithm=="rmsp"||algorithm=="RMSP")
 	{
 		fullname="RMSProp optimizer";
-		Trainer *trainer=NULL;
+		dynet::Trainer *trainer=NULL;
 		if(params.size()==1)
-			trainer = new RMSPropTrainer(pc,params[0]);
+			trainer = new dynet::RMSPropTrainer(pc,params[0]);
 		else if(params.size()==2)
-			trainer = new RMSPropTrainer(pc,params[0],params[1]);
+			trainer = new dynet::RMSPropTrainer(pc,params[0],params[1]);
 		else
-			trainer = new RMSPropTrainer(pc,params[0],params[1],params[2]);
+			trainer = new dynet::RMSPropTrainer(pc,params[0],params[1],params[2]);
 		return trainer;
 	}
 	if(algorithm=="Adam"||algorithm=="adam"||algorithm=="ADAM")
 	{
 		fullname="Adam optimizer";
-		Trainer *trainer=NULL;
+		dynet::Trainer *trainer=NULL;
 		if(params.size()==1)
-			trainer = new AdamTrainer(pc,params[0]);
+			trainer = new dynet::AdamTrainer(pc,params[0]);
 		else if(params.size()==2)
-			trainer = new AdamTrainer(pc,params[0],params[1]);
+			trainer = new dynet::AdamTrainer(pc,params[0],params[1]);
 		else if(params.size()==3)
-			trainer = new AdamTrainer(pc,params[0],params[1],params[2]);
+			trainer = new dynet::AdamTrainer(pc,params[0],params[1],params[2]);
 		else
-			trainer = new AdamTrainer(pc,params[0],params[1],params[2],params[3]);
+			trainer = new dynet::AdamTrainer(pc,params[0],params[1],params[2],params[3]);
 		return trainer;
 	}
 	if(algorithm=="AMSGrad"||algorithm=="Amsgrad"||algorithm=="Amsg"||algorithm=="amsg")
 	{
 		fullname="AMSGrad optimizer";
-		Trainer *trainer=NULL;
+		dynet::Trainer *trainer=NULL;
 		if(params.size()==1)
-			trainer = new AmsgradTrainer(pc,params[0]);
+			trainer = new dynet::AmsgradTrainer(pc,params[0]);
 		else if(params.size()==2)
-			trainer = new AmsgradTrainer(pc,params[0],params[1]);
+			trainer = new dynet::AmsgradTrainer(pc,params[0],params[1]);
 		else if(params.size()==3)
-			trainer = new AmsgradTrainer(pc,params[0],params[1],params[2]);
+			trainer = new dynet::AmsgradTrainer(pc,params[0],params[1],params[2]);
 		else
-			trainer = new AmsgradTrainer(pc,params[0],params[1],params[2],params[3]);
+			trainer = new dynet::AmsgradTrainer(pc,params[0],params[1],params[2],params[3]);
 		return trainer;
 	}
 	return NULL;
 }
 
 
+}
 }
 
 #endif

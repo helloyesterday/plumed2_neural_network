@@ -161,15 +161,15 @@ private:
 	std::vector<float> hyper_params_bias;
 	std::vector<float> hyper_params_Dw;
 	
-	ParameterCollection pc_bias;
-	ParameterCollection pc_Dw;
+	dynet::ParameterCollection pc_bias;
+	dynet::ParameterCollection pc_Dw;
 	
-	Trainer *train_bias;
-	Trainer *train_Dw;
+	dynet::Trainer *train_bias;
+	dynet::Trainer *train_Dw;
 	
-	Parameter parm_bias;
-	Parameter parm_rc_dw;
-	Parameter parm_rc_vb;
+	dynet::Parameter parm_bias;
+	dynet::Parameter parm_rc_dw;
+	dynet::Parameter parm_rc_vb;
 	MLP nn_Dw;
 	
 	Value* valueDwLoss;
@@ -315,15 +315,7 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		comm.Bcast(random_seed,0);
 	}
 	
-	int cc=1;
-	char pp[]="plumed";
-	char *vv[]={pp};
-	char** ivv=vv;
-	DynetParams params = extract_dynet_params(cc,ivv,true);
-
-	params.random_seed=random_seed;
-	
-	dynet::initialize(params);
+	dynet_initialization(random_seed);
 	
 	for(unsigned i=0;i!=narg;++i)
 	{
@@ -533,12 +525,12 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 		{
 			if(multi_sim_comm.Get_rank()==0)
 			{
-				init_coe=as_vector(*parm_bias.values());
+				init_coe=dynet::as_vector(*parm_bias.values());
 				params_Dw=nn_Dw.get_parameters();
 				if(opt_rc)
 				{
-					init_rc_dw=as_vector(*parm_rc_dw.values());
-					init_rc_vb=as_vector(*parm_rc_vb.values());
+					init_rc_dw=dynet::as_vector(*parm_rc_dw.values());
+					init_rc_vb=dynet::as_vector(*parm_rc_vb.values());
 				}
 			}
 			multi_sim_comm.Barrier();
@@ -562,12 +554,12 @@ Opt_TALOS::Opt_TALOS(const ActionOptions&ao):
 	{
 		if(comm.Get_rank()==0)
 		{
-			init_coe=as_vector(*parm_bias.values());
+			init_coe=dynet::as_vector(*parm_bias.values());
 			params_Dw=nn_Dw.get_parameters();
 			if(opt_rc)
 			{
-				init_rc_dw=as_vector(*parm_rc_dw.values());
-				init_rc_vb=as_vector(*parm_rc_vb.values());
+				init_rc_dw=dynet::as_vector(*parm_rc_dw.values());
+				init_rc_vb=dynet::as_vector(*parm_rc_vb.values());
 			}
 		}
 		comm.Barrier();
@@ -979,13 +971,13 @@ void Opt_TALOS::update()
 	}
 	if(opt_rc)
 	{
-		ComputationGraph cg;
-		Expression W = parameter(cg,parm_rc_dw);
-		Expression b = parameter(cg,parm_rc_vb);
-		Expression x = input(cg,{narg},&varg);
-		Expression y_pred = tanh( W * x + b);
+		dynet::ComputationGraph cg;
+		dynet::Expression W = dynet::parameter(cg,parm_rc_dw);
+		dynet::Expression b = dynet::parameter(cg,parm_rc_vb);
+		dynet::Expression x = dynet::input(cg,{narg},&varg);
+		dynet::Expression y_pred = dynet::tanh( W * x + b);
 		
-		std::vector<float> vrc=as_vector(cg.forward(y_pred));
+		std::vector<float> vrc=dynet::as_vector(cg.forward(y_pred));
 		
 		input_rc.push_back(vrc[0]);
 		
@@ -1032,17 +1024,17 @@ void Opt_TALOS::update()
 		//~ std::vector<float> xx(tot_basis,0);
 		//~ if(comm.Get_rank()==0)
 		//~ {
-			//~ ComputationGraph cg;
-			//~ Expression W = parameter(cg,parm_bias);
-			//~ Expression x = input(cg,{tot_basis},&debug_vec);
-			//~ Expression y_pred = W * x;
+			//~ dynet::ComputationGraph cg;
+			//~ dynet::Expression W = dynet::parameter(cg,parm_bias);
+			//~ dynet::Expression x = dynet::input(cg,{tot_basis},&debug_vec);
+			//~ dynet::Expression y_pred = W * x;
 			
 			//~ if(counts==0)
 			//~ {
-				//~ ww=as_vector(W.value());
-				//~ xx=as_vector(x.value());
+				//~ ww=dynet::as_vector(W.value());
+				//~ xx=dynet::as_vector(x.value());
 			//~ }
-			//~ pred=as_vector(cg.forward(y_pred));
+			//~ pred=dynet::as_vector(cg.forward(y_pred));
 		//~ }
 		//~ comm.Barrier();
 		//~ comm.Bcast(pred,0);
@@ -1161,12 +1153,12 @@ void Opt_TALOS::update()
 					else
 						vbloss=update_bias(all_input_bias,vec_fw);
 					vec_fw.resize(0);
-					new_coe=as_vector(*parm_bias.values());
+					new_coe=dynet::as_vector(*parm_bias.values());
 					params_Dw=nn_Dw.get_parameters();
 					if(opt_rc)
 					{
-						new_rc_dw=as_vector(*parm_rc_dw.values());
-						new_rc_vb=as_vector(*parm_rc_vb.values());
+						new_rc_dw=dynet::as_vector(*parm_rc_dw.values());
+						new_rc_vb=dynet::as_vector(*parm_rc_vb.values());
 					}
 				}
 				multi_sim_comm.Barrier();
@@ -1202,12 +1194,12 @@ void Opt_TALOS::update()
 				else
 					vbloss=update_bias(input_bias,vec_fw);
 				vec_fw.resize(0);
-				new_coe=as_vector(*parm_bias.values());
+				new_coe=dynet::as_vector(*parm_bias.values());
 				params_Dw=nn_Dw.get_parameters();
 				if(opt_rc)
 				{
-					new_rc_dw=as_vector(*parm_rc_dw.values());
-					new_rc_vb=as_vector(*parm_rc_vb.values());
+					new_rc_dw=dynet::as_vector(*parm_rc_dw.values());
+					new_rc_vb=dynet::as_vector(*parm_rc_vb.values());
 				}
 			}
 			comm.Barrier();
@@ -1268,7 +1260,7 @@ void Opt_TALOS::update()
 		
 		if(comm.Get_rank()==0&&multi_sim_comm.Get_rank()==0&&iter_time%Dw_output==0)
 		{
-			TextFileSaver saver(Dw_file);
+			dynet::TextFileSaver saver(Dw_file);
 			saver.save(pc_Dw);
 		}
 		
@@ -1347,32 +1339,32 @@ void Opt_TALOS::update()
 // training the parameter of discriminator (value network)
 float Opt_TALOS::update_value_network(const std::vector<float>& all_input_rc,std::vector<std::vector<float>>& vec_fw)
 {
-	ComputationGraph cg;
-	Dim xs_dim({target_dim},batch_size);
-	Dim xt_dim({target_dim},ntarget);
-	Dim pt_dim({1},ntarget);
+	dynet::ComputationGraph cg;
+	dynet::Dim xs_dim({target_dim},batch_size);
+	dynet::Dim xt_dim({target_dim},ntarget);
+	dynet::Dim pt_dim({1},ntarget);
 	
 	//~ std::random_shuffle(input_target.begin(), input_target.end());
 
 	unsigned wsize=batch_size*target_dim;
 	std::vector<float> input_sample(wsize);
-	Expression x_sample=input(cg,xs_dim,&input_sample);
-	Expression x_target=input(cg,xt_dim,&input_target);
-	Expression p_target=input(cg,pt_dim,&target_dis);
+	dynet::Expression x_sample=dynet::input(cg,xs_dim,&input_sample);
+	dynet::Expression x_target=dynet::input(cg,xt_dim,&input_target);
+	dynet::Expression p_target=dynet::input(cg,pt_dim,&target_dis);
 
-	Expression y_sample=nn_Dw.run(x_sample,cg);
-	Expression y_target=nn_Dw.run(x_target,cg);
+	dynet::Expression y_sample=nn_Dw.run(x_sample,cg);
+	dynet::Expression y_target=nn_Dw.run(x_target,cg);
 	
-	Expression l_target=y_target*p_target;
+	dynet::Expression l_target=y_target*p_target;
 
-	Expression loss_sample=mean_batches(y_sample);
-	Expression loss_target=mean_batches(l_target);
+	dynet::Expression loss_sample=dynet::mean_batches(y_sample);
+	dynet::Expression loss_target=dynet::mean_batches(l_target);
 
-	Expression loss_Dw;
+	dynet::Expression loss_Dw;
 	
 	if(do_quadratic)
 	{
-		Expression loss_sample2 = lambda * loss_sample * loss_sample;
+		dynet::Expression loss_sample2 = lambda * loss_sample * loss_sample;
 		loss_Dw = loss_sample - loss_target + loss_sample2;
 	}
 	else
@@ -1399,7 +1391,7 @@ float Opt_TALOS::update_value_network(const std::vector<float>& all_input_rc,std
 	for(unsigned i=0;i!=nepoch;++i)
 	{
 		input_sample=vec_input_sample[i];
-		vec_fw.push_back(as_vector(cg.forward(y_sample)));
+		vec_fw.push_back(dynet::as_vector(cg.forward(y_sample)));
 	}
 	
 	return dwloss;
@@ -1419,21 +1411,21 @@ float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std:
 		avg_fw/=tot_data_size;
 	}
 	
-	ComputationGraph cg;
-	Expression W = parameter(cg,parm_bias);
-	Dim bias_dim({tot_basis},batch_size),fw_dim({1},batch_size);
+	dynet::ComputationGraph cg;
+	dynet::Expression W = dynet::parameter(cg,parm_bias);
+	dynet::Dim bias_dim({tot_basis},batch_size),fw_dim({1},batch_size);
 	unsigned bsize=batch_size*tot_basis;
 	std::vector<float> basis_batch(bsize);
-	Expression x = input(cg,bias_dim,&basis_batch);
-	Expression y_pred = W * x;
+	dynet::Expression x = dynet::input(cg,bias_dim,&basis_batch);
+	dynet::Expression y_pred = W * x;
 	std::vector<float> fw_batch;
-	Expression fw = input(cg,fw_dim,&fw_batch);
-	Expression loss_mean = mean_batches(fw * y_pred);
+	dynet::Expression fw = dynet::input(cg,fw_dim,&fw_batch);
+	dynet::Expression loss_mean = dynet::mean_batches(fw * y_pred);
 	
-	Expression loss_fin;
+	dynet::Expression loss_fin;
 	if(use_full_loss)
 	{
-		Expression loss_mean2 = mean_batches(avg_fw * y_pred);
+		dynet::Expression loss_mean2 = dynet::mean_batches(avg_fw * y_pred);
 		loss_fin = beta * (loss_mean + loss_mean2);
 	}
 	else
@@ -1451,7 +1443,7 @@ float Opt_TALOS::update_bias(const std::vector<float>& all_input_bias,const std:
 	}
 	vbloss/=nepoch;
 	
-	//~ new_coe=as_vector(W.value());
+	//~ new_coe=dynet::as_vector(W.value());
 	return vbloss;
 }
 
@@ -1461,41 +1453,41 @@ float Opt_TALOS::update_bias_and_rc(const std::vector<float>& all_input_bias,
 	const std::vector<float>& all_p_rc_sample2,
 	const std::vector<std::vector<float>>& vec_fw)
 {
-	ComputationGraph cg;
-	Expression W = parameter(cg,parm_bias);
-	Dim bias_dim({tot_basis},batch_size),fw_dim({1},batch_size);
+	dynet::ComputationGraph cg;
+	dynet::Expression W = dynet::parameter(cg,parm_bias);
+	dynet::Dim bias_dim({tot_basis},batch_size),fw_dim({1},batch_size);
 	unsigned bsize=batch_size*tot_basis;
 	std::vector<float> basis_batch(bsize);
-	Expression x = input(cg,bias_dim,&basis_batch);
-	Expression y_pred = W * x;
+	dynet::Expression x = dynet::input(cg,bias_dim,&basis_batch);
+	dynet::Expression y_pred = W * x;
 	std::vector<float> fw_batch;
-	Expression fw = input(cg,fw_dim,&fw_batch);
+	dynet::Expression fw = dynet::input(cg,fw_dim,&fw_batch);
 	
-	Expression loss_bias = beta * fw * y_pred;
-	Expression loss_mean = mean_batches(loss_bias);
+	dynet::Expression loss_bias = beta * fw * y_pred;
+	dynet::Expression loss_mean = dynet::mean_batches(loss_bias);
 	
 	unsigned asize=batch_size*narg;
-	Dim rc_dim({narg},batch_size);
+	dynet::Dim rc_dim({narg},batch_size);
 	std::vector<float> rc_arg_batch(asize);
-	Expression x_r = input(cg,rc_dim,&rc_arg_batch);
+	dynet::Expression x_r = dynet::input(cg,rc_dim,&rc_arg_batch);
 	
-	Dim prc_dim({target_dim},batch_size);
+	dynet::Dim prc_dim({target_dim},batch_size);
 	std::vector<float> p_rc1_batch(batch_size);
 	std::vector<float> p_rc2_batch(batch_size);
-	Expression p_rc1 = input(cg,prc_dim,&p_rc1_batch);
-	Expression p_rc2 = input(cg,prc_dim,&p_rc2_batch);
+	dynet::Expression p_rc1 = dynet::input(cg,prc_dim,&p_rc1_batch);
+	dynet::Expression p_rc2 = dynet::input(cg,prc_dim,&p_rc2_batch);
 	
-	Expression Dw_rc = parameter(cg,parm_rc_dw);
-	Expression Vb_rc = parameter(cg,parm_rc_vb);
+	dynet::Expression Dw_rc = dynet::parameter(cg,parm_rc_dw);
+	dynet::Expression Vb_rc = dynet::parameter(cg,parm_rc_vb);
 	
-	Expression y_rc = (tanh( Dw_rc * x_r + Vb_rc) + 1.0)/2;
-	Expression l_rc1 = dynet::log(y_rc) * p_rc1;
-	Expression l_rc2 = dynet::log(1.0 - y_rc) * p_rc2;
+	dynet::Expression y_rc = (dynet::tanh( Dw_rc * x_r + Vb_rc) + 1.0)/2;
+	dynet::Expression l_rc1 = dynet::log(y_rc) * p_rc1;
+	dynet::Expression l_rc2 = dynet::log(1.0 - y_rc) * p_rc2;
 	
-	Expression loss_rc = mean_batches(l_rc1) + mean_batches(l_rc2);
-	//~ Expression loss_rc = mean_batches(l_rc1 + l_rc2);
-	Expression loss_fin = loss_mean - loss_rc;
-	//~ Expression loss_fin = loss_mean;
+	dynet::Expression loss_rc = dynet::mean_batches(l_rc1) + dynet::mean_batches(l_rc2);
+	//~ dynet::Expression loss_rc = mean_batches(l_rc1 + l_rc2);
+	dynet::Expression loss_fin = loss_mean - loss_rc;
+	//~ dynet::Expression loss_fin = loss_mean;
 
 	double vbloss=0;
 	for(unsigned i=0;i!=nepoch;++i)
@@ -1521,19 +1513,19 @@ float Opt_TALOS::update_bias_and_rc(const std::vector<float>& all_input_bias,
 	}
 	vbloss/=nepoch;
 	
-	//~ new_coe=as_vector(W.value());
+	//~ new_coe=dynet::as_vector(W.value());
 	return vbloss;
 }
 
 void Opt_TALOS::update_rc_target()
 {	
-	ComputationGraph cg;
-	Expression W = parameter(cg,parm_rc_dw);
-	Expression b = parameter(cg,parm_rc_vb);
-	Dim x_dim({narg},3);
-	Expression x = input(cg,x_dim,&ps_boundary);
-	Expression y_pred = tanh( W * x + b);
-	std::vector<float> rcp=as_vector(cg.forward(y_pred));
+	dynet::ComputationGraph cg;
+	dynet::Expression W = dynet::parameter(cg,parm_rc_dw);
+	dynet::Expression b = dynet::parameter(cg,parm_rc_vb);
+	dynet::Dim x_dim({narg},3);
+	dynet::Expression x = input(cg,x_dim,&ps_boundary);
+	dynet::Expression y_pred = tanh( W * x + b);
+	std::vector<float> rcp=dynet::as_vector(cg.forward(y_pred));
 	
 	if((rcp[0]-rcp[2])*(rcp[2]-rcp[1])<0)
 		plumed_merror("The point of transition state must between the two stable states: "+
