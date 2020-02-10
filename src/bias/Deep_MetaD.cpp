@@ -72,6 +72,10 @@ void Deep_MetaD::registerKeywords(Keywords& keys)
 	keys.add("compulsory","SCALE_FACTOR","5","a constant to scale the output of neural network as bias potential");
 	keys.add("compulsory","BIAS_PARAM_OUTPUT","bias_parameters.data","the file to output the parameters of the neural network");
 	keys.add("compulsory","FES_PARAM_OUTPUT","fes_parameters.data","the file to output the parameters of the neural network");
+	keys.add("compulsory","HMC_STEPS","100","the steps for hybrid monte carlo at a update cycle");
+	keys.add("compulsory","HMC_TIMESTEP","0.01","the time step for hybrid monte carlo for the sampling of the neural network of free energy");
+	keys.add("compulsory","HMC_ARG_MASS","1.0","the mass for each argument at hybrid monte carlo");
+	keys.add("compulsory","HMC_ARG_STDEV","1.0","the standard deviation of the normal distribution to generate random velocity for each argument at hybrid monte carlo");
 	
 	keys.add("optional","BIAS_ALGORITHM","(default=ADAM) the algorithm to train the discriminator (value network)");
 	keys.add("optional","FES_ALGORITHM","(default=ADAM) the algorithm to train the discriminator (value network)");
@@ -93,7 +97,9 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	narg(getNumberOfArguments()),
 	steps(0),
 	firsttime(true),
-	trainer(NULL)
+	rand_prob(0,1.0),
+	trainer_bias(NULL),
+	trainer_fes(NULL)
 {
 	parse("BIAS_LAYERS_NUMBER",nlv);
 	plumed_massert(nlv>0,"LAYERS_NUMBER must be larger than 0!");
@@ -130,7 +136,7 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	{
 		if(safv.size()==1)
 		{
-			std::string af=str_afs[0];
+			std::string af=safv[0];
 			safv.assign(nlv,af);
 		}
 		else
@@ -146,7 +152,7 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	{
 		if(saff.size()==1)
 		{
-			std::string af=str_afs[0];
+			std::string af=saff[0];
 			saff.assign(nlf,af);
 		}
 		else
@@ -180,6 +186,34 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	parse("UPDATE_STEPS",update_steps);
 	
 	parseFlag("MULTIPLE_WALKERS",use_mw);
+	
+	parse("HMC_STEPS",hmc_steps);
+	parse("HMC_TIMESTEP",dt_hmc);
+	parseVector("HMC_ARG_MASS",hmc_arg_mass);
+	if(hmc_arg_mass.size()!=narg)
+	{
+		if(hmc_arg_mass.size()==1)
+		{
+			float hmass=hmc_arg_mass[0];
+			hmc_arg_mass.assign(narg,hmass);
+		}
+		else
+			plumed_merror("the number of HMC_ARG_MASS mismatch");
+	}
+	
+	parseVector("HMC_ARG_STDEV",hmc_arg_sd);
+	if(hmc_arg_sd.size()!=narg)
+	{
+		if(hmc_arg_sd.size()==1)
+		{
+			float hsd=hmc_arg_sd[0];
+			hmc_arg_sd.assign(narg,hsd);
+		}
+		else
+			plumed_merror("the number of HMC_ARG_STDEV mismatch");
+	}
+	for(unsigned i=0;i!=narg;++i)
+		ndist.push_back(std::normal_distribution<float>(0,hmc_arg_sd[i]));
 
 	random_seed=0;
 	if(use_mw)
@@ -351,18 +385,18 @@ void Deep_MetaD::prepare()
 		if(bias_file_in.size()>0)
 		{
 			dynet::TextFileLoader loader(bias_file_in);
-			loader.populate(pc);
+			loader.populate(pcv);
 		}
 		dynet::TextFileSaver savev(bias_file_out);
-		savev.save(pc);
+		savev.save(pcv);
 		
 		if(fes_file_in.size()>0)
 		{
 			dynet::TextFileLoader loader(fes_file_in);
-			loader.populate(pc);
+			loader.populate(pcf);
 		}
-		dynet::TextFileSaver savev(fes_file_out);
-		savev.save(pc);
+		dynet::TextFileSaver savef(fes_file_out);
+		savef.save(pcf);
 		
 		firsttime=false;
 	}
@@ -403,7 +437,7 @@ float Deep_MetaD::calc_energy(const std::vector<float>& args,std::vector<float>&
 {
 	dynet::ComputationGraph cg;
 	dynet::Expression inputs=dynet::input(cg,{narg},&args);
-	dynet::Expression output=bias_scale*nn.run(inputs,cg);
+	dynet::Expression output=bias_scale*nnv.run(inputs,cg);
 	
 	cg.forward(output);
 	std::vector<float> outvec=dynet::as_vector(output.value());
@@ -420,7 +454,7 @@ float Deep_MetaD::update_fes()
 	dynet::Dim in_dim({narg},update_steps);
 	dynet::Expression inputs=dynet::input(cg,in_dim,&arg_record);
 	
-	dynet::Expression fes_md=nnf.run(inputs,cg);
+	dynet::Expression fes_md=bias_scale*nnf.run(inputs,cg);
 	dynet::Expression md_mean=dynet::mean_batches(fes_md);
 	
 	dynet::Expression loss1=md_mean;
@@ -448,6 +482,102 @@ float Deep_MetaD::update_bias()
 	arg_record.resize(0);
 	
 	return vloss1;
+}
+
+std::vector<float> Deep_MetaD::hybrid_monte_carlo(const std::vector<float>& init_coords)
+{
+	std::vector<float> v0(narg);
+	double K0=random_velocities(v0);
+		
+	std::vector<float> r0(init_coords);
+	std::vector<float> r_input(r0);
+	
+	dynet::ComputationGraph cg;
+	dynet::Expression inputs=dynet::input(cg,{narg},&r_input);
+	dynet::Expression fes=bias_scale*nnf.run(inputs,cg);
+	
+	std::vector<float> deriv0;
+	double F0=get_output_and_gradient(cg,inputs,fes,deriv0);
+	double H0=F0+K0;
+	std::back_insert_iterator<std::vector<float>> back_iter(arg_random);
+	std::copy(r0.begin(),r0.end(),back_iter);
+	
+	for(unsigned i=1;i!=hmc_steps;++i)
+	{
+		std::vector<float> vh(narg);
+		std::vector<float> r1(narg);
+		for(unsigned j=0;j!=narg;++j)
+		{
+			double v=v0[j]-deriv0[j]*dt_hmc/hmc_arg_mass[j]/2;
+			vh[j]=v;
+			double r=r0[j]+v*dt_hmc;
+			r1[j]=r;
+			r_input[j]=r;
+		}
+		
+		std::vector<float> deriv1;
+		double F1=get_output_and_gradient(cg,inputs,fes,deriv1);
+
+		double K1=0;
+		std::vector<float> v1(narg);
+		for(unsigned j=0;j!=narg;++j)
+		{
+			double v=vh[j]-deriv1[j]*dt_hmc/hmc_arg_mass[j]/2;
+			v1[j]=v;
+			K1+=hmc_arg_mass[j]*v*v/2;
+		}
+		double H1=F1+K1;
+		
+		bool accept=false;
+		if(H1<H0)
+			accept=true;
+		else
+		{
+			double acprob=exp(-kBT*(H1-H0));
+			double prob=rand_prob(rdgen);
+			if(prob<acprob)
+				accept=true;
+		}
+		
+		if(accept)
+		{
+			F0=F1;
+			H0=H1;
+			r0.swap(r1);
+			v0.swap(v1);
+			deriv0.swap(deriv1);
+		}
+		else
+		{
+			K0=random_velocities(v0);
+			H0=F0+K0;
+		}
+		
+		std::copy(r0.begin(),r0.end(),back_iter);
+	}
+	
+	return r0;
+}
+
+double Deep_MetaD::random_velocities(std::vector<float>& v)
+{
+	double kinetics=0;
+	for(unsigned i=0;i!=narg;++i)
+	{
+		double rdv=ndist[i](rdgen);
+		v[i]=rdv;
+		kinetics+=hmc_arg_mass[i]*rdv*rdv/2;
+	}
+	return kinetics;
+}
+
+double Deep_MetaD::get_output_and_gradient(dynet::ComputationGraph& cg,dynet::Expression& inputs,dynet::Expression& output,std::vector<float>& deriv)
+{
+	cg.forward(output);
+	cg.backward(output,true);
+	std::vector<float> out=dynet::as_vector(output.value());
+	deriv=dynet::as_vector(inputs.gradient());
+	return out[0];
 }
 
 }

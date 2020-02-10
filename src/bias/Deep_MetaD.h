@@ -24,6 +24,7 @@
 #ifndef __PLUMED_bias_Deep_MetaD_h
 #define __PLUMED_bias_Deep_MetaD_h
 
+#include <random>
 #include "Bias.h"
 #include "tools/DynetTools.h"
 
@@ -41,6 +42,7 @@ private:
 	unsigned random_seed;
 	unsigned update_steps;
 	unsigned steps;
+	unsigned hmc_steps;
 	
 	bool firsttime;
 	bool use_mw;
@@ -48,6 +50,7 @@ private:
 	
 	float bias_scale;
 	float scale_factor;
+	float dt_hmc;
 	
 	float clip_left;
 	float clip_right;
@@ -59,21 +62,30 @@ private:
 	double kB;
 	double kBT;
 	
+	std::default_random_engine rdgen;
+	std::uniform_real_distribution<double> rand_prob;
+	
 	std::vector<float> lrv;
 	std::vector<float> lrf;
 	std::vector<float> hpv;
 	std::vector<float> hpf;
+	std::vector<float> hmc_arg_mass;
+	std::vector<float> hmc_arg_sd;
+	
+	std::vector<float> arg_record;
+	std::vector<float> arg_random;
+	
+	std::vector<std::normal_distribution<float>> ndist;
 
 	std::string bias_file_in;
 	std::string bias_file_out;
 	std::string bias_algorithm;
 	std::string fes_file_in;
-	std::string fes_flle_out;
+	std::string fes_file_out;
 	std::string fes_algorithm;
 
 	std::vector<unsigned> ldv;
 	std::vector<unsigned> ldf;
-	std::vector<float> arg_record;
 	std::vector<Activation> afv;
 	std::vector<Activation> aff;
 	
@@ -90,6 +102,8 @@ private:
 	dynet::Trainer *trainer_fes;
 	
 	float calc_energy(const std::vector<float>& args,std::vector<float>& deriv);
+	double random_velocities(std::vector<float>& v);
+	double get_output_and_gradient(dynet::ComputationGraph& cg,dynet::Expression& inputs,dynet::Expression& output,std::vector<float>& deriv);
 	
 public:
 	explicit Deep_MetaD(const ActionOptions&);
@@ -102,6 +116,7 @@ public:
 	float update_bias();
 	
 	unsigned get_random_seed() const {return random_seed;}
+	std::vector<float> hybrid_monte_carlo(const std::vector<float>& init_coords);
 
 	//~ void set_parameters();
 };
