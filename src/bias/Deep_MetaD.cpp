@@ -72,10 +72,12 @@ void Deep_MetaD::registerKeywords(Keywords& keys)
 	keys.add("compulsory","SCALE_FACTOR","5","a constant to scale the output of neural network as bias potential");
 	keys.add("compulsory","BIAS_PARAM_OUTPUT","bias_parameters.data","the file to output the parameters of the neural network");
 	keys.add("compulsory","FES_PARAM_OUTPUT","fes_parameters.data","the file to output the parameters of the neural network");
-	keys.add("compulsory","HMC_STEPS","100","the steps for hybrid monte carlo at a update cycle");
-	keys.add("compulsory","HMC_TIMESTEP","0.01","the time step for hybrid monte carlo for the sampling of the neural network of free energy");
+	keys.add("compulsory","HMC_SAMPLING_POINTS","100","the sampling points for hybrid monte carlo at a MD simulation step");
+	keys.add("compulsory","HMC_STEPS","10","the steps for a sampling of a hybrid monte carlo run");
+	keys.add("compulsory","HMC_TIMESTEP","0.001","the time step for hybrid monte carlo for the sampling of the neural network of free energy");
 	keys.add("compulsory","HMC_ARG_MASS","1.0","the mass for each argument at hybrid monte carlo");
 	keys.add("compulsory","HMC_ARG_STDEV","1.0","the standard deviation of the normal distribution to generate random velocity for each argument at hybrid monte carlo");
+	keys.add("compulsory","WT_BIAS_FACTOR","10","the well-tempered bias factor for deep metadynamics");
 	
 	keys.add("optional","BIAS_ALGORITHM","(default=ADAM) the algorithm to train the discriminator (value network)");
 	keys.add("optional","FES_ALGORITHM","(default=ADAM) the algorithm to train the discriminator (value network)");
@@ -98,6 +100,7 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	steps(0),
 	firsttime(true),
 	rand_prob(0,1.0),
+	arg_init(getNumberOfArguments(),0),
 	trainer_bias(NULL),
 	trainer_fes(NULL)
 {
@@ -168,6 +171,8 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	parse("FES_PARAM_READ_FILE",fes_file_in);
 	
 	parse("SCALE_FACTOR",scale_factor);
+	parse("WT_BIAS_FACTOR",bias_factor);
+	bias_scale=1.0-1.0/bias_factor;
 	
 	kB=plumed.getAtoms().getKBoltzmann();
 	sim_temp=-1;
@@ -181,12 +186,13 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	}
 	beta=1.0/kBT;
 	
-	bias_scale=scale_factor*kBT;
+	energy_scale=scale_factor*kBT;
 	
 	parse("UPDATE_STEPS",update_steps);
 	
 	parseFlag("MULTIPLE_WALKERS",use_mw);
 	
+	parse("HMC_SAMPLING_POINTS",hmc_points);
 	parse("HMC_STEPS",hmc_steps);
 	parse("HMC_TIMESTEP",dt_hmc);
 	parseVector("HMC_ARG_MASS",hmc_arg_mass);
@@ -412,12 +418,6 @@ void Deep_MetaD::calculate()
 		if(update_steps>0)
 			arg_record.push_back(val);
 	}
-	
-	if(update_steps>0&&steps>0&&(steps%update_steps==0))
-	{
-		update_fes();
-		update_bias();
-	}
 
 	std::vector<float> deriv;
 	double bias_pot=calc_energy(args,deriv);
@@ -430,6 +430,28 @@ void Deep_MetaD::calculate()
 		setOutputForce(i,bias_force);
 	}
 	
+	if(update_steps>0)
+	{
+		bias_record.push_back(bias_pot);
+		std::copy(args.begin(),args.end(),
+			std::back_insert_iterator<std::vector<float>>(arg_record));
+
+		if(steps==0)
+			arg_init=args;
+		hybrid_monte_carlo(arg_init);
+
+		if(steps>0&&(steps%update_steps==0))
+		{
+			update_fes();
+			update_bias();
+			bias_record.resize(0);
+			arg_record.resize(0);
+			fes_random.resize(0);
+			arg_random.resize(0);
+			arg_init.swap(args);
+		}
+	}
+	
 	++steps;
 }
 
@@ -437,95 +459,119 @@ float Deep_MetaD::calc_energy(const std::vector<float>& args,std::vector<float>&
 {
 	dynet::ComputationGraph cg;
 	dynet::Expression inputs=dynet::input(cg,{narg},&args);
-	dynet::Expression output=bias_scale*nnv.run(inputs,cg);
-	
-	cg.forward(output);
-	std::vector<float> outvec=dynet::as_vector(output.value());
-	
-	cg.backward(output,true);
-	deriv=dynet::as_vector(inputs.gradient());
-	
-	return outvec[0];
+	dynet::Expression output=energy_scale*nnv.run(inputs,cg);
+	return get_output_and_gradient(cg,inputs,output,deriv);
 }
 
 float Deep_MetaD::update_fes()
 {
 	dynet::ComputationGraph cg;
-	dynet::Dim in_dim({narg},update_steps);
-	dynet::Expression inputs=dynet::input(cg,in_dim,&arg_record);
 	
-	dynet::Expression fes_md=bias_scale*nnf.run(inputs,cg);
+	dynet::Dim bias_dim({1},update_steps);
+	dynet::Dim md_dim({narg},update_steps);
+	dynet::Dim mc_dim({narg},update_steps*hmc_steps);
+	
+	dynet::Expression md_bias=dynet::input(cg,bias_dim,&arg_random);
+	dynet::Expression md_inputs=dynet::input(cg,md_dim,&arg_record);
+	dynet::Expression mc_inputs=dynet::input(cg,mc_dim,&arg_random);
+	
+	dynet::Expression fes_md=energy_scale*nnf.run(md_inputs,cg)*dynet::exp(beta*md_bias);
+	dynet::Expression fes_mc=energy_scale*nnf.run(mc_inputs,cg);
+	
 	dynet::Expression md_mean=dynet::mean_batches(fes_md);
+	dynet::Expression mc_mean=dynet::mean_batches(fes_mc);
 	
-	dynet::Expression loss1=md_mean;
-	float vloss1 = as_scalar(cg.forward(loss1));
-	cg.backward(loss1);
+	dynet::Expression loss=md_mean-mc_mean;
+	float vloss = as_scalar(cg.forward(loss));
+	cg.backward(loss);
 	trainer_fes->update();
 	
-	return vloss1;
+	return vloss;
 }
 
 float Deep_MetaD::update_bias()
 {
 	dynet::ComputationGraph cg;
-	dynet::Dim in_dim({narg},update_steps);
-	dynet::Expression inputs=dynet::input(cg,in_dim,&arg_record);
 	
-	dynet::Expression bias_md=nnv.run(inputs,cg);
-	dynet::Expression md_mean=dynet::mean_batches(bias_md);
+	dynet::Dim md_dim({narg},update_steps);
+	dynet::Dim mc_dim({narg},update_steps*hmc_steps);
+	dynet::Dim fes_dim({1},update_steps*hmc_steps);
 	
-	dynet::Expression loss1=md_mean;
-	float vloss1 = as_scalar(cg.forward(loss1));
-	cg.backward(loss1);
+	dynet::Expression md_inputs=dynet::input(cg,md_dim,&arg_record);
+	dynet::Expression mc_inputs=dynet::input(cg,mc_dim,&arg_random);
+	dynet::Expression mc_fes=dynet::input(cg,fes_dim,&fes_random);
+	
+	dynet::Expression bias_md=energy_scale*nnv.run(md_inputs,cg);
+	dynet::Expression bias_mc=energy_scale*nnv.run(mc_inputs,cg)*dynet::exp(beta*bias_scale*mc_fes);
+	
+	dynet::Expression md_sample=dynet::mean_batches(bias_md);
+	dynet::Expression md_target=dynet::mean_batches(bias_mc);
+	
+	dynet::Expression loss=md_target-md_sample;
+	float vloss = as_scalar(cg.forward(loss));
+	cg.backward(loss);
 	trainer_bias->update();
 	
 	arg_record.resize(0);
 	
-	return vloss1;
+	return vloss;
 }
 
-std::vector<float> Deep_MetaD::hybrid_monte_carlo(const std::vector<float>& init_coords)
+void Deep_MetaD::hybrid_monte_carlo(std::vector<float>& init_coords)
 {
-	std::vector<float> v0(narg);
-	double K0=random_velocities(v0);
-		
-	std::vector<float> r0(init_coords);
-	std::vector<float> r_input(r0);
+	std::vector<float> coords(init_coords);
+	std::vector<float> r_input(coords);
 	
 	dynet::ComputationGraph cg;
 	dynet::Expression inputs=dynet::input(cg,{narg},&r_input);
-	dynet::Expression fes=bias_scale*nnf.run(inputs,cg);
+	dynet::Expression fes=energy_scale*nnf.run(inputs,cg);
 	
-	std::vector<float> deriv0;
-	double F0=get_output_and_gradient(cg,inputs,fes,deriv0);
-	double H0=F0+K0;
+	std::vector<float> deriv;
+	double F0=get_output_and_gradient(cg,inputs,fes,deriv);
+	fes_random.push_back(F0);
 	std::back_insert_iterator<std::vector<float>> back_iter(arg_random);
-	std::copy(r0.begin(),r0.end(),back_iter);
+	std::copy(coords.begin(),coords.end(),back_iter);
 	
-	for(unsigned i=1;i!=hmc_steps;++i)
+	for(unsigned i=1;i!=hmc_points;++i)
 	{
-		std::vector<float> vh(narg);
-		std::vector<float> r1(narg);
-		for(unsigned j=0;j!=narg;++j)
+		std::vector<float> r0(coords);
+		std::vector<float> dF_dr0(deriv);
+		
+		std::vector<float> v0(narg);
+		double K0=random_velocities(v0);
+		double H0=F0+K0;
+
+		double F1=F0;
+		for(unsigned j=0;j!=hmc_steps;++j)
 		{
-			double v=v0[j]-deriv0[j]*dt_hmc/hmc_arg_mass[j]/2;
-			vh[j]=v;
-			double r=r0[j]+v*dt_hmc;
-			r1[j]=r;
-			r_input[j]=r;
+			std::vector<float> r1(narg);
+			std::vector<float> vh(narg);
+			
+			for(unsigned k=0;k!=narg;++k)
+			{
+				double v=v0[k]-dF_dr0[k]*dt_hmc/hmc_arg_mass[k]/2;
+				vh[k]=v;
+				double r=r0[k]+v*dt_hmc;
+				r1[k]=r;
+				r_input[k]=r;
+			}
+			
+			std::vector<float> dF_dr1;
+			F1=get_output_and_gradient(cg,inputs,fes,dF_dr1);
+			
+			std::vector<float> v1(narg);
+			for(unsigned k=0;k!=narg;++k)
+				v1[k]=vh[k]-dF_dr1[k]*dt_hmc/hmc_arg_mass[k]/2;
+			
+			r0.swap(r1);
+			v0.swap(v1);
+			dF_dr0.swap(dF_dr1);
 		}
 		
-		std::vector<float> deriv1;
-		double F1=get_output_and_gradient(cg,inputs,fes,deriv1);
-
 		double K1=0;
-		std::vector<float> v1(narg);
-		for(unsigned j=0;j!=narg;++j)
-		{
-			double v=vh[j]-deriv1[j]*dt_hmc/hmc_arg_mass[j]/2;
-			v1[j]=v;
-			K1+=hmc_arg_mass[j]*v*v/2;
-		}
+		for(unsigned k=0;k!=narg;++k)
+			K1+=hmc_arg_mass[k]*v0[k]*v0[k]/2;
+		
 		double H1=F1+K1;
 		
 		bool accept=false;
@@ -541,22 +587,16 @@ std::vector<float> Deep_MetaD::hybrid_monte_carlo(const std::vector<float>& init
 		
 		if(accept)
 		{
+			coords.swap(r0);
+			deriv.swap(dF_dr0);
 			F0=F1;
-			H0=H1;
-			r0.swap(r1);
-			v0.swap(v1);
-			deriv0.swap(deriv1);
-		}
-		else
-		{
-			K0=random_velocities(v0);
-			H0=F0+K0;
 		}
 		
-		std::copy(r0.begin(),r0.end(),back_iter);
+		fes_random.push_back(F0);
+		std::copy(coords.begin(),coords.end(),back_iter);
 	}
 	
-	return r0;
+	init_coords.swap(coords);
 }
 
 double Deep_MetaD::random_velocities(std::vector<float>& v)
@@ -571,7 +611,7 @@ double Deep_MetaD::random_velocities(std::vector<float>& v)
 	return kinetics;
 }
 
-double Deep_MetaD::get_output_and_gradient(dynet::ComputationGraph& cg,dynet::Expression& inputs,dynet::Expression& output,std::vector<float>& deriv)
+float Deep_MetaD::get_output_and_gradient(dynet::ComputationGraph& cg,dynet::Expression& inputs,dynet::Expression& output,std::vector<float>& deriv)
 {
 	cg.forward(output);
 	cg.backward(output,true);

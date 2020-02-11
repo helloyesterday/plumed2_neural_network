@@ -42,14 +42,17 @@ private:
 	unsigned random_seed;
 	unsigned update_steps;
 	unsigned steps;
+	unsigned hmc_points;
 	unsigned hmc_steps;
 	
 	bool firsttime;
 	bool use_mw;
 	bool no_update;
 	
-	float bias_scale;
+	float energy_scale;
 	float scale_factor;
+	float bias_factor;
+	float bias_scale;
 	float dt_hmc;
 	
 	float clip_left;
@@ -72,8 +75,11 @@ private:
 	std::vector<float> hmc_arg_mass;
 	std::vector<float> hmc_arg_sd;
 	
+	std::vector<float> bias_record;
 	std::vector<float> arg_record;
+	std::vector<float> fes_random;
 	std::vector<float> arg_random;
+	std::vector<float> arg_init;
 	
 	std::vector<std::normal_distribution<float>> ndist;
 
@@ -101,9 +107,8 @@ private:
 	dynet::Trainer *trainer_bias;
 	dynet::Trainer *trainer_fes;
 	
-	float calc_energy(const std::vector<float>& args,std::vector<float>& deriv);
 	double random_velocities(std::vector<float>& v);
-	double get_output_and_gradient(dynet::ComputationGraph& cg,dynet::Expression& inputs,dynet::Expression& output,std::vector<float>& deriv);
+	float get_output_and_gradient(dynet::ComputationGraph& cg,dynet::Expression& inputs,dynet::Expression& output,std::vector<float>& deriv);
 	
 public:
 	explicit Deep_MetaD(const ActionOptions&);
@@ -116,7 +121,8 @@ public:
 	float update_bias();
 	
 	unsigned get_random_seed() const {return random_seed;}
-	std::vector<float> hybrid_monte_carlo(const std::vector<float>& init_coords);
+	void hybrid_monte_carlo(std::vector<float>& init_coords);
+	float calc_energy(const std::vector<float>& args,std::vector<float>& deriv);
 
 	//~ void set_parameters();
 };
