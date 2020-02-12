@@ -192,6 +192,7 @@ protected:
   std::vector<std::vector<unsigned>> params_size;
 
   bool dropout_active = true;
+  bool has_periodic=false;
 
 public:
   unsigned get_layers() const {return LAYERS;}
@@ -199,6 +200,7 @@ public:
   unsigned get_input_dim() const {return output_dim;}
   void clip(float left,float right,bool clip_last_layer=false);
   void clip_inplace(float left,float right,bool clip_last_layer=false);
+  void set_periodic();
   
   unsigned parameters_number() const {return params_num;}
   
@@ -240,7 +242,7 @@ public:
    *
    * \return [description]
    */
-  dynet::Expression run(dynet::Expression x,dynet::ComputationGraph& cg);
+  dynet::Expression run(dynet::Expression& x,dynet::ComputationGraph& cg);
                  
   /**
    * \brief Run the MLP on an input vector/batch
@@ -250,7 +252,7 @@ public:
    *
    * \return [description]
    */
-  dynet::Expression get_grad(dynet::Expression x,dynet::ComputationGraph& cg);
+  dynet::Expression get_grad(dynet::Expression& x,dynet::ComputationGraph& cg);
   
   /**
    * \brief Return the negative log likelihood for the (batched) pair (x,y)
@@ -261,7 +263,7 @@ public:
    * \param cg Computation graph
    * \return dynet::Expression for the negative log likelihood on the batch
    */
-  dynet::Expression get_nll(dynet::Expression x,std::vector<unsigned> labels,dynet::ComputationGraph& cg);
+  dynet::Expression get_nll(dynet::Expression& x,std::vector<unsigned> labels,dynet::ComputationGraph& cg);
   
   /**
    * \brief Predict the most probable label
@@ -272,7 +274,7 @@ public:
    *
    * \return Label index
    */
-  int predict(dynet::Expression x,dynet::ComputationGraph& cg);
+  int predict(dynet::Expression& x,dynet::ComputationGraph& cg);
   
     /**
    * \brief Enable dropout
@@ -305,6 +307,60 @@ public:
 private:
   //~ inline dynet::Expression activate(dynet::Expression h, Activation f);
   //~ inline dynet::Expression activate_grad(dynet::Expression h, Activation f);
+};
+
+class MLP_CV {
+public:
+	explicit MLP_CV():_has_periodic(false),ncv(0),nhidden(0),energy_scale(1) {}
+	explicit MLP_CV(unsigned _ncv):_has_periodic(false),ncv(_ncv),nhidden(0),energy_scale(1) {set_cvs_number(ncv);}
+	
+	bool has_periodic() const {return _has_periodic;}
+	float get_energy_scale() const {return energy_scale;}
+	unsigned get_cvs_number() const {return ncv;}
+
+	void set_energy_scale(float _energy_scale) {energy_scale=_energy_scale;}
+		
+	void set_cvs_number(unsigned cv_number) {ncv=cv_number;ninput=ncv;
+		is_pcvs.assign(ncv,false);cvs_max.resize(ncv);cvs_min.resize(ncv);
+		cvs_period.assign(ncv,0);cvs_scale.assign(ncv,1.0);}
+	
+	void set_periodic(const std::vector<bool> _is_pcvs);
+	void set_cvs_scale(const std::vector<float> _cvs_scale){
+		if(_cvs_scale.size()!=ncv){
+			std::cerr<<"The size of std::vector _cvs_scale must be equal to the number of CVs"<<std::endl;
+			std::exit(-1);
+		}
+		cvs_scale=_cvs_scale;
+	}
+	
+	void set_hidden_layers(const std::vector<unsigned>& _hidden_layers,const std::vector<Activation>& _act_funs);
+	
+	void build_neural_network(dynet::ParameterCollection& pc);
+	
+	dynet::Expression energy(dynet::ComputationGraph& cg,dynet::Expression& x);
+private:
+	const float pi=3.141592653589793238462643383279502884197169399375105820974944592307;
+	
+	bool _has_periodic;
+	unsigned ncv;
+	unsigned ninput;
+	unsigned num_pcv;
+	unsigned nhidden;
+	float energy_scale;
+	
+	MLP nn;
+	// periodic
+	std::vector<bool> is_pcvs;
+	std::vector<float> cvs_max;
+	std::vector<float> cvs_min;
+	std::vector<float> cvs_period;
+	std::vector<float> cvs_scale;
+	
+	std::vector<Activation> act_funs;
+	std::vector<unsigned> hidden_layers;
+	
+	std::vector<unsigned> pids;
+	std::vector<unsigned> npids;
 };
 
 class WGAN {

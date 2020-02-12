@@ -135,7 +135,7 @@ void MLP::append(dynet::ParameterCollection& model, Layer layer)
    *
    * \return [description]
    */
-dynet::Expression MLP::run(dynet::Expression x,dynet::ComputationGraph& cg)
+dynet::Expression MLP::run(dynet::Expression& x,dynet::ComputationGraph& cg)
 {
     // dynet::Expression for the current hidden state
     dynet::Expression h_cur = x;
@@ -178,7 +178,7 @@ dynet::Expression MLP::run(dynet::Expression x,dynet::ComputationGraph& cg)
    * \param cg Computation graph
    * \return dynet::Expression for the negative log likelihood on the batch
    */
-dynet::Expression MLP::get_nll(dynet::Expression x,std::vector<unsigned> labels,dynet::ComputationGraph& cg)
+dynet::Expression MLP::get_nll(dynet::Expression& x,std::vector<unsigned> labels,dynet::ComputationGraph& cg)
 {
     // compute output
     dynet::Expression y = run(x, cg);
@@ -197,7 +197,7 @@ dynet::Expression MLP::get_nll(dynet::Expression x,std::vector<unsigned> labels,
    *
    * \return Label index
    */
-int MLP::predict(dynet::Expression x,dynet::ComputationGraph& cg)
+int MLP::predict(dynet::Expression& x,dynet::ComputationGraph& cg)
 {
     // run MLP to get class distribution
     dynet::Expression y = run(x, cg);
@@ -269,6 +269,82 @@ void MLP::set_parameters(const std::vector<float>& param_values)
 			params[i][j].set_value(new_params);
 		}
 	}
+}
+
+
+dynet::Expression MLP_CV::energy(dynet::ComputationGraph& cg,dynet::Expression& x)
+{
+	dynet::Expression inputs;
+	if(_has_periodic)
+	{
+		dynet::Expression scale=dynet::input(cg,{ncv},&cvs_scale);
+		dynet::Expression sx=dynet::cmult(x,scale);
+		if(npids.size()==0)
+			inputs=dynet::concatenate({dynet::cos(sx),dynet::sin(sx)});
+		else
+		{
+			dynet::Expression px=dynet::select_rows(sx,&pids);
+			dynet::Expression npx=dynet::select_rows(sx,&npids);
+			inputs=dynet::concatenate({dynet::cos(px),dynet::sin(px),npx});
+		}
+	}
+	else
+		inputs=x;
+	return energy_scale*nn.run(inputs,cg);
+}
+
+void MLP_CV::set_periodic(const std::vector<bool> _is_pcvs)
+{
+	if(_is_pcvs.size()!=ncv)
+	{
+		std::cerr<<"The size of std::vector _is_pcvs must be equal to the number of CVs"<<std::endl;
+		std::exit(-1);
+	}
+	is_pcvs=_is_pcvs;
+	pids.resize(0);
+	npids.resize(0);
+	ninput=ncv;
+	num_pcv=0;
+	for(unsigned i=0;i!=ncv;++i)
+	{
+		if(is_pcvs[i])
+		{
+			pids.push_back(i);
+			_has_periodic=true;
+			++ninput;
+			++num_pcv;
+		}
+		else
+			npids.push_back(i);
+	}
+}
+
+void MLP_CV::set_hidden_layers(const std::vector<unsigned>& _hidden_layers,const std::vector<Activation>& _act_funs)
+{
+	if(_hidden_layers.size()!=_act_funs.size())
+	{
+		std::cerr<<"The size of std::vector _hidden_layers must be equal to the size of std::vector _act_funs"<<std::endl;
+		std::exit(-1);
+	}
+	nhidden=_hidden_layers.size();
+	hidden_layers=_hidden_layers;
+	act_funs=_act_funs;
+}
+
+void MLP_CV::build_neural_network(dynet::ParameterCollection& pc)
+{
+	if(ncv==0)
+	{
+		std::cerr<<"In order to build neural network, the number of CVs must larger than 0"<<std::endl;
+		std::exit(-1);
+	}
+	unsigned ldim=ninput;
+	for(unsigned i=0;i!=nhidden;++i)
+	{
+		nn.append(pc,Layer(ldim,hidden_layers[i],act_funs[i],0));
+		ldim=hidden_layers[i];
+	}
+	nn.append(pc,Layer(ldim,1,Activation::LINEAR,0));
 }
 
 WGAN::WGAN(MLP& _nn,unsigned _bsize,unsigned _ntarget,
