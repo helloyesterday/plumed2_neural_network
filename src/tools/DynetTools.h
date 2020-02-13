@@ -309,10 +309,10 @@ private:
   //~ inline dynet::Expression activate_grad(dynet::Expression h, Activation f);
 };
 
-class MLP_CV {
+class MLP_energy {
 public:
-	explicit MLP_CV():_has_periodic(false),ncv(0),nhidden(0),energy_scale(1) {}
-	explicit MLP_CV(unsigned _ncv):_has_periodic(false),ncv(_ncv),nhidden(0),energy_scale(1) {set_cvs_number(ncv);}
+	explicit MLP_energy():_has_periodic(false),ncv(0),nhidden(0),energy_scale(1) {}
+	explicit MLP_energy(unsigned _ncv):_has_periodic(false),ncv(_ncv),nhidden(0),energy_scale(1) {set_cvs_number(ncv);}
 	
 	bool has_periodic() const {return _has_periodic;}
 	float get_energy_scale() const {return energy_scale;}

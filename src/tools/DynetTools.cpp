@@ -272,7 +272,7 @@ void MLP::set_parameters(const std::vector<float>& param_values)
 }
 
 
-dynet::Expression MLP_CV::energy(dynet::ComputationGraph& cg,dynet::Expression& x)
+dynet::Expression MLP_energy::energy(dynet::ComputationGraph& cg,dynet::Expression& x)
 {
 	dynet::Expression inputs;
 	if(_has_periodic)
@@ -293,7 +293,7 @@ dynet::Expression MLP_CV::energy(dynet::ComputationGraph& cg,dynet::Expression& 
 	return energy_scale*nn.run(inputs,cg);
 }
 
-void MLP_CV::set_periodic(const std::vector<bool> _is_pcvs)
+void MLP_energy::set_periodic(const std::vector<bool> _is_pcvs)
 {
 	if(_is_pcvs.size()!=ncv)
 	{
@@ -319,7 +319,7 @@ void MLP_CV::set_periodic(const std::vector<bool> _is_pcvs)
 	}
 }
 
-void MLP_CV::set_hidden_layers(const std::vector<unsigned>& _hidden_layers,const std::vector<Activation>& _act_funs)
+void MLP_energy::set_hidden_layers(const std::vector<unsigned>& _hidden_layers,const std::vector<Activation>& _act_funs)
 {
 	if(_hidden_layers.size()!=_act_funs.size())
 	{
@@ -331,7 +331,7 @@ void MLP_CV::set_hidden_layers(const std::vector<unsigned>& _hidden_layers,const
 	act_funs=_act_funs;
 }
 
-void MLP_CV::build_neural_network(dynet::ParameterCollection& pc)
+void MLP_energy::build_neural_network(dynet::ParameterCollection& pc)
 {
 	if(ncv==0)
 	{
