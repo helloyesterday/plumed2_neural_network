@@ -30,15 +30,11 @@
 #include "tools/Matrix.h"
 #include "tools/Random.h"
 #include "tools/Tools.h"
-#include <string>
 #include <cstring>
 #include "tools/File.h"
 #include <iostream>
 #include <iomanip>
-#include <vector>
-#include <limits>
 #include <ctime>
-#include <cmath>
 
 namespace PLMD{
 namespace bias{
@@ -62,16 +58,14 @@ void Deep_MetaD::registerKeywords(Keywords& keys)
 	//~ keys.use("ARG");
 
 	keys.add("compulsory","UPDATE_STEPS","1000","the frequency to update parameters of neural networks. ZERO means do not update the parameters");
-	keys.add("compulsory","BIAS_LAYERS_NUMBER","3","the hidden layers of the multilayer preceptron");
-	keys.add("compulsory","BIAS_LAYER_DIMENSIONS","64","the dimension of each hidden layers");
-	keys.add("compulsory","BIAS_ACTIVE_FUNCTIONS","SWISH","the activation function for the neural network");
-	keys.add("compulsory","FES_LAYERS_NUMBER","3","the hidden layers of the multilayer preceptron");
-	keys.add("compulsory","FES_LAYER_DIMENSIONS","64","the dimension of each hidden layers");
-	keys.add("compulsory","FES_ACTIVE_FUNCTIONS","SWISH","the activation function for the neural network");
+	keys.add("compulsory","LAYERS_NUMBER","3","the hidden layers of the multilayer preceptron of the neural networks");
+	keys.add("compulsory","LAYER_DIMENSIONS","64","the dimension of each hidden layers of the neural networks");
+	keys.add("compulsory","ACTIVE_FUNCTIONS","SWISH","the activation function for the neural networks");
+	keys.add("compulsory","OPT_ALGORITHM","ADAM","the algorithm to train the neural networks");
 	keys.add("compulsory","CLIP_RANGE","-0.01,0.01","the range of the value to clip");
 	keys.add("compulsory","SCALE_FACTOR","5","a constant to scale the output of neural network as bias potential");
-	keys.add("compulsory","BIAS_PARAM_OUTPUT","bias_parameters.data","the file to output the parameters of the neural network");
-	keys.add("compulsory","FES_PARAM_OUTPUT","fes_parameters.data","the file to output the parameters of the neural network");
+	keys.add("compulsory","BIAS_PARAM_OUTPUT","bias_parameters.data","the file to output the parameters of the neural network of the bias potential");
+	keys.add("compulsory","FES_PARAM_OUTPUT","fes_parameters.data","the file to output the parameters of the neural network of the free energy surface");
 	keys.add("compulsory","HMC_SAMPLING_POINTS","100","the sampling points for hybrid monte carlo at a MD simulation step");
 	keys.add("compulsory","HMC_STEPS","10","the steps for a sampling of a hybrid monte carlo run");
 	keys.add("compulsory","HMC_TIMESTEP","0.001","the time step for hybrid monte carlo for the sampling of the neural network of free energy");
@@ -79,19 +73,23 @@ void Deep_MetaD::registerKeywords(Keywords& keys)
 	keys.add("compulsory","HMC_ARG_STDEV","1.0","the standard deviation of the normal distribution to generate random velocity for each argument at hybrid monte carlo");
 	keys.add("compulsory","WT_BIAS_FACTOR","10","the well-tempered bias factor for deep metadynamics");
 	
-	keys.add("optional","BIAS_ALGORITHM","(default=ADAM) the algorithm to train the discriminator (value network)");
-	keys.add("optional","FES_ALGORITHM","(default=ADAM) the algorithm to train the discriminator (value network)");
-	keys.add("optional","BIAS_LEARN_RATE","the learning rate for training the neural network");
-	keys.add("optional","BIAS_HYPER_PARAMS","other hyperparameters for training the neural network");
-	keys.add("optional","BIAS_CLIP_THRESHOLD","the clip threshold for training the neural network");
-	keys.add("optional","FES_LEARN_RATE","the learning rate for training the neural network");
-	keys.add("optional","FES_HYPER_PARAMS","other hyperparameters for training the neural network");
-	keys.add("optional","FES_CLIP_THRESHOLD","the clip threshold for training the neural network");
-	keys.add("optional","BIAS_PARAM_READ_FILE","the file to output the parameters of the neural network");
-	keys.add("optional","FES_PARAM_READ_FILE","the file to output the parameters of the neural network");
+	keys.addFlag("USE_DIFF_PARAM_FOR_FES",false,"use different parameters for the neural network of free energy surface");
+	keys.addFlag("MULTIPLE_WALKERS",false,"use multiple walkers");
+	
+	keys.add("optional","LEARN_RATE","the learning rate for training the neural network");
+	keys.add("optional","HYPER_PARAMS","other hyperparameters for training the neural network");
+	keys.add("optional","CLIP_THRESHOLD","the clip threshold for training the neural network");
+	keys.add("optional","FES_LAYERS_NUMBER","the hidden layers of the neural network for the FES");
+	keys.add("optional","FES_LAYER_DIMENSIONS","the dimension of each hidden layers of the neural network for the FES");
+	keys.add("optional","FES_ACTIVE_FUNCTIONS","the activation function of the neural network for the FES");
+	keys.add("optional","FES_OPT_ALGORITHM","the algorithm to train the discriminator (free energy surface)");
+	keys.add("optional","FES_LEARN_RATE","the learning rate for the neural network of FES");
+	keys.add("optional","FES_HYPER_PARAMS","other hyperparameters for training the neural network of FES");
+	keys.add("optional","FES_CLIP_THRESHOLD","the clip threshold for training the neural network of FES");
+	keys.add("optional","BIAS_PARAM_READ_FILE","the file to output the parameters of the neural network of bias potential");
+	keys.add("optional","FES_PARAM_READ_FILE","the file to output the parameters of the neural networkof free energy surface");
 	keys.add("optional","SIM_TEMP","the simulation temerature");
 	
-	keys.addFlag("MULTIPLE_WALKERS",false,"use multiple walkers");
 }
 
 Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
@@ -100,16 +98,40 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	steps(0),
 	firsttime(true),
 	rand_prob(0,1.0),
+	arg_pbc(getNumberOfArguments(),false),
 	arg_init(getNumberOfArguments(),0),
+	arg_min(getNumberOfArguments(),0),
+	arg_max(getNumberOfArguments(),0),
 	trainer_bias(NULL),
 	trainer_fes(NULL)
 {
-	parse("BIAS_LAYERS_NUMBER",nlv);
-	plumed_massert(nlv>0,"LAYERS_NUMBER must be larger than 0!");
-	parse("FES_LAYERS_NUMBER",nlf);
-	plumed_massert(nlv>0,"LAYERS_NUMBER must be larger than 0!");
+	std::vector<std::string> arg_label(narg);
+	is_arg_has_pbc=false;
+	for(unsigned i=0;i!=narg;++i)
+	{
+		arg_pbc[i]=getPntrToArgument(i)->isPeriodic();
+		arg_label[i]=getNumberOfArguments();
+		if(arg_pbc[i])
+			is_arg_has_pbc=true;
 
-	parseVector("BIAS_LAYER_DIMENSIONS",ldv);
+		double minout,maxout;
+		getPntrToArgument(i)->getDomain(minout,maxout);
+		arg_min[i]=minout;
+		arg_max[i]=maxout;
+		arg_period[i]=maxout-minout;
+	}
+	nnv.set_cvs_number(narg);
+	nnv.set_periodic(arg_pbc);
+	nnf.set_cvs_number(narg);
+	nnf.set_periodic(arg_pbc);
+	
+	parseFlag("USE_DIFF_PARAM_FOR_FES",use_diff_param);
+	
+	parse("LAYERS_NUMBER",nlv);
+	plumed_massert(nlv>0,"LAYERS_NUMBER must be larger than 0!");
+	nlf=nlv;
+
+	parseVector("LAYER_DIMENSIONS",ldv);
 	if(ldv.size()!=nlv)
 	{
 		if(ldv.size()==1)
@@ -118,23 +140,12 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 			ldv.assign(nlv,dim);
 		}
 		else
-			plumed_merror("BIAS_LAYER_DIMENSIONS mismatch!");
+			plumed_merror("LAYER_DIMENSIONS mismatch!");
 	}
-	
-	parseVector("FES_LAYER_DIMENSIONS",ldf);
-	if(ldf.size()!=nlf)
-	{
-		if(ldf.size()==1)
-		{
-			unsigned dim=ldf[0];
-			ldf.assign(nlf,dim);
-		}
-		else
-			plumed_merror("FES_LAYER_DIMENSIONS mismatch!");
-	}
+	ldf=ldv;
 
 	std::vector<std::string> safv;
-	parseVector("BIAS_ACTIVE_FUNCTIONS",safv);
+	parseVector("ACTIVE_FUNCTIONS",safv);
 	if(safv.size()!=nlv)
 	{
 		if(safv.size()==1)
@@ -145,25 +156,45 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 		else
 			plumed_merror("ACTIVE_FUNCTIONS mismatch!");
 	}
+	std::vector<std::string> saff=safv;
+	
 	afv.resize(nlv);
 	for(unsigned i=0;i!=nlv;++i)
 		afv[i]=activation_function(safv[i]);
-
-	std::vector<std::string> saff;
-	parseVector("BIAS_ACTIVE_FUNCTIONS",saff);
-	if(saff.size()!=nlf)
+	aff=afv;
+	
+	if(use_diff_param)
 	{
-		if(saff.size()==1)
+		parse("FES_LAYERS_NUMBER",nlf);
+		plumed_massert(nlv>0,"LAYERS_NUMBER must be larger than 0!");
+		parseVector("FES_LAYER_DIMENSIONS",ldf);
+		if(ldf.size()!=nlf)
 		{
-			std::string af=saff[0];
-			saff.assign(nlf,af);
+			if(ldf.size()==1)
+			{
+				unsigned dim=ldf[0];
+				ldf.assign(nlf,dim);
+			}
+			else
+				plumed_merror("FES_LAYER_DIMENSIONS mismatch!");
 		}
-		else
-			plumed_merror("ACTIVE_FUNCTIONS mismatch!");
+		
+		saff.resize(0);
+		parseVector("FES_ACTIVE_FUNCTIONS",saff);
+		if(saff.size()!=nlf)
+		{
+			if(saff.size()==1)
+			{
+				std::string af=saff[0];
+				saff.assign(nlf,af);
+			}
+			else
+				plumed_merror("FES_ACTIVE_FUNCTIONS mismatch!");
+		}
+		aff.resize(nlf);
+		for(unsigned i=0;i!=nlf;++i)
+			aff[i]=activation_function(saff[i]);
 	}
-	aff.resize(nlf);
-	for(unsigned i=0;i!=nlf;++i)
-		aff[i]=activation_function(saff[i]);
 
 	parse("BIAS_PARAM_OUTPUT",bias_file_out);
 	parse("FES_PARAM_OUTPUT",fes_file_out);
@@ -187,6 +218,8 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	beta=1.0/kBT;
 	
 	energy_scale=scale_factor*kBT;
+	nnv.set_energy_scale(energy_scale);
+	nnf.set_energy_scale(energy_scale);
 	
 	parse("UPDATE_STEPS",update_steps);
 	
@@ -253,20 +286,27 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	std::string bias_fullname;
 	std::string fes_fullname;
 	if(update_steps>0)
-	{
-		bias_algorithm="ADAM";
-		parse("BIAS_ALGORITHM",bias_algorithm);
-		parse("BIAS_CLIP_THRESHOLD",bias_clip_threshold);
-		parseVector("BIAS_LEARN_RATE",lrv);
-		std::vector<float> opv;
-		parseVector("BIAS_HYPER_PARAMS",opv);
+	{	
+		parse("OPT_ALGORITHM",bias_algorithm);
+		fes_algorithm=bias_algorithm;
 		
-		fes_algorithm="ADAM";
-		parse("FES_ALGORITHM",fes_algorithm);
-		parse("FES_CLIP_THRESHOLD",fes_clip_threshold);
-		parseVector("FES_LEARN_RATE",lrf);
-		std::vector<float> opf;
-		parseVector("FES_HYPER_PARAMS",opf);
+		parse("CLIP_THRESHOLD",bias_clip_threshold);
+		fes_clip_threshold=bias_clip_threshold;
+		
+		parseVector("LEARN_RATE",lrv);
+		lrf=lrv;
+
+		std::vector<float> opv;
+		parseVector("HYPER_PARAMS",opv);
+		std::vector<float> opf=opv;
+		
+		if(use_diff_param)
+		{
+			parse("FES_ALGORITHM",fes_algorithm);
+			parse("FES_CLIP_THRESHOLD",fes_clip_threshold);
+			parseVector("FES_LEARN_RATE",lrf);
+			parseVector("FES_HYPER_PARAMS",opf);
+		}
 		
 		std::vector<float> clips; 
 		parseVector("CLIP_RANGE",clips);
@@ -327,6 +367,13 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	
 	checkRead();
 
+	for(unsigned i=0;i!=narg;++i)
+	{
+		if(arg_pbc[i])
+			log.printf("    %dth CV \"%s\" (periodic): from %f to %f.\n",int(i+1),arg_label[i].c_str(),arg_min[i],arg_max[i]);
+		else
+			log.printf("    %dth CV \"%s\" (non-periodic): from %f to %f.\n",int(i+1),arg_label[i].c_str(),arg_min[i],arg_max[i]);
+	}
 	if(use_mw)
 		log.printf("  using multiple walkers: \n");
 	log.printf("  with random seed: %d\n",int(random_seed));
@@ -372,21 +419,10 @@ void Deep_MetaD::prepare()
 {
 	if(firsttime)
 	{
-		unsigned ldim=narg;
-		for(unsigned i=0;i!=nlv;++i)
-		{
-			nnv.append(pcv,Layer(ldim,ldv[i],afv[i],0));
-			ldim=ldv[i];
-		}
-		nnv.append(pcv,Layer(ldim,1,Activation::LINEAR,0));
-		
-		ldim=narg;
-		for(unsigned i=0;i!=nlf;++i)
-		{
-			nnf.append(pcf,Layer(ldim,ldf[i],aff[i],0));
-			ldim=ldv[i];
-		}
-		nnf.append(pcf,Layer(ldim,1,Activation::LINEAR,0));
+		nnv.set_hidden_layers(ldv,afv);
+		nnv.build_neural_network(pcv);
+		nnf.set_hidden_layers(ldf,aff);
+		nnf.build_neural_network(pcf);
 		
 		if(bias_file_in.size()>0)
 		{
@@ -459,7 +495,7 @@ float Deep_MetaD::calc_energy(const std::vector<float>& args,std::vector<float>&
 {
 	dynet::ComputationGraph cg;
 	dynet::Expression inputs=dynet::input(cg,{narg},&args);
-	dynet::Expression output=energy_scale*nnv.run(inputs,cg);
+	dynet::Expression output=nnv.energy(cg,inputs);
 	return get_output_and_gradient(cg,inputs,output,deriv);
 }
 
@@ -475,8 +511,8 @@ float Deep_MetaD::update_fes()
 	dynet::Expression md_inputs=dynet::input(cg,md_dim,&arg_record);
 	dynet::Expression mc_inputs=dynet::input(cg,mc_dim,&arg_random);
 	
-	dynet::Expression fes_md=energy_scale*nnf.run(md_inputs,cg)*dynet::exp(beta*md_bias);
-	dynet::Expression fes_mc=energy_scale*nnf.run(mc_inputs,cg);
+	dynet::Expression fes_md=nnf.energy(cg,md_inputs)*dynet::exp(beta*md_bias);
+	dynet::Expression fes_mc=nnf.energy(cg,mc_inputs);
 	
 	dynet::Expression md_mean=dynet::mean_batches(fes_md);
 	dynet::Expression mc_mean=dynet::mean_batches(fes_mc);
@@ -501,8 +537,8 @@ float Deep_MetaD::update_bias()
 	dynet::Expression mc_inputs=dynet::input(cg,mc_dim,&arg_random);
 	dynet::Expression mc_fes=dynet::input(cg,fes_dim,&fes_random);
 	
-	dynet::Expression bias_md=energy_scale*nnv.run(md_inputs,cg);
-	dynet::Expression bias_mc=energy_scale*nnv.run(mc_inputs,cg)*dynet::exp(beta*bias_scale*mc_fes);
+	dynet::Expression bias_md=nnv.energy(cg,md_inputs);
+	dynet::Expression bias_mc=nnv.energy(cg,mc_inputs)*dynet::exp(beta*bias_scale*mc_fes);
 	
 	dynet::Expression md_sample=dynet::mean_batches(bias_md);
 	dynet::Expression md_target=dynet::mean_batches(bias_mc);
@@ -524,7 +560,7 @@ void Deep_MetaD::hybrid_monte_carlo(std::vector<float>& init_coords)
 	
 	dynet::ComputationGraph cg;
 	dynet::Expression inputs=dynet::input(cg,{narg},&r_input);
-	dynet::Expression fes=energy_scale*nnf.run(inputs,cg);
+	dynet::Expression fes=nnf.energy(cg,inputs);
 	
 	std::vector<float> deriv;
 	double F0=get_output_and_gradient(cg,inputs,fes,deriv);

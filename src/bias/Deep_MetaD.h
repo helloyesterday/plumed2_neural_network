@@ -48,6 +48,8 @@ private:
 	bool firsttime;
 	bool use_mw;
 	bool no_update;
+	bool is_arg_has_pbc;
+	bool use_diff_param;
 	
 	float energy_scale;
 	float scale_factor;
@@ -68,6 +70,8 @@ private:
 	std::default_random_engine rdgen;
 	std::uniform_real_distribution<double> rand_prob;
 	
+	std::vector<bool> arg_pbc;
+	
 	std::vector<float> lrv;
 	std::vector<float> lrf;
 	std::vector<float> hpv;
@@ -80,6 +84,9 @@ private:
 	std::vector<float> fes_random;
 	std::vector<float> arg_random;
 	std::vector<float> arg_init;
+	std::vector<float> arg_min;
+	std::vector<float> arg_max;
+	std::vector<float> arg_period;
 	
 	std::vector<std::normal_distribution<float>> ndist;
 
@@ -101,8 +108,8 @@ private:
 	dynet::ParameterCollection pcv;
 	dynet::ParameterCollection pcf;
 	
-	MLP nnv;
-	MLP nnf;
+	MLP_energy nnv;
+	MLP_energy nnf;
 	
 	dynet::Trainer *trainer_bias;
 	dynet::Trainer *trainer_fes;
