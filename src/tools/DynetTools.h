@@ -338,6 +338,9 @@ public:
 	void build_neural_network(dynet::ParameterCollection& pc);
 	
 	dynet::Expression energy(dynet::ComputationGraph& cg,dynet::Expression& x);
+	
+	void clip(float left,float right,bool clip_last_layer=false)
+		{nn.clip(left,right,clip_last_layer);}
 private:
 	const float pi=3.141592653589793238462643383279502884197169399375105820974944592307;
 	

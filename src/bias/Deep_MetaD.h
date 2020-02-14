@@ -43,7 +43,14 @@ private:
 	unsigned update_steps;
 	unsigned steps;
 	unsigned hmc_points;
+	unsigned tot_hmc_points;
 	unsigned hmc_steps;
+	unsigned fes_nepoch;
+	unsigned bias_nepoch;
+	unsigned fes_bsize;
+	unsigned bias_bsize;
+	unsigned md_bsize;
+	unsigned mc_bsize;
 	
 	bool firsttime;
 	bool use_mw;
@@ -80,13 +87,15 @@ private:
 	std::vector<float> hmc_arg_sd;
 	
 	std::vector<float> bias_record;
-	std::vector<float> arg_record;
+	std::vector<float> weight_record;
 	std::vector<float> fes_random;
-	std::vector<float> arg_random;
 	std::vector<float> arg_init;
 	std::vector<float> arg_min;
 	std::vector<float> arg_max;
 	std::vector<float> arg_period;
+	
+	std::vector<std::vector<float>> arg_record;
+	std::vector<std::vector<float>> arg_random;
 	
 	std::vector<std::normal_distribution<float>> ndist;
 

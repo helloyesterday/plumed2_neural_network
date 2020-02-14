@@ -277,7 +277,7 @@ dynet::Expression Mol_GNN::energy(dynet::ComputationGraph& cg,const std::vector<
 		{
 			dynet::Expression dis=dynet::sqrt(squared_distance(
 				atoms_coord[i],atoms_coord[j]));
-				
+
 			if(use_cutoff)
 			{
 				std::vector<float> vdis=dynet::as_vector(dis.value());
