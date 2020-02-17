@@ -223,7 +223,7 @@ public:
    * \param model dynet::ParameterCollection to contain parameters
    * \param layers Layers description
    */
-  explicit MLP(dynet::ParameterCollection& model,std::vector<Layer> layers);
+  explicit MLP(dynet::ParameterCollection& model,const std::vector<Layer>& layers);
   
   /**
    * \brief Append a layer at the end of the network
@@ -232,7 +232,7 @@ public:
    * \param model [description]
    * \param layer [description]
    */
-  void append(dynet::ParameterCollection& model, Layer layer);
+  void append(dynet::ParameterCollection& model,const Layer& layer);
   
     /**
    * \brief Run the MLP on an input vector/batch
@@ -242,7 +242,7 @@ public:
    *
    * \return [description]
    */
-  dynet::Expression run(dynet::Expression& x,dynet::ComputationGraph& cg);
+  dynet::Expression run(const dynet::Expression& x,dynet::ComputationGraph& cg);
                  
   /**
    * \brief Run the MLP on an input vector/batch
@@ -252,7 +252,7 @@ public:
    *
    * \return [description]
    */
-  dynet::Expression get_grad(dynet::Expression& x,dynet::ComputationGraph& cg);
+  dynet::Expression get_grad(const dynet::Expression& x,dynet::ComputationGraph& cg);
   
   /**
    * \brief Return the negative log likelihood for the (batched) pair (x,y)
@@ -263,7 +263,7 @@ public:
    * \param cg Computation graph
    * \return dynet::Expression for the negative log likelihood on the batch
    */
-  dynet::Expression get_nll(dynet::Expression& x,std::vector<unsigned> labels,dynet::ComputationGraph& cg);
+  dynet::Expression get_nll(const dynet::Expression& x,const std::vector<unsigned>& labels,dynet::ComputationGraph& cg);
   
   /**
    * \brief Predict the most probable label
@@ -274,7 +274,7 @@ public:
    *
    * \return Label index
    */
-  int predict(dynet::Expression& x,dynet::ComputationGraph& cg);
+  int predict(const dynet::Expression& x,dynet::ComputationGraph& cg);
   
     /**
    * \brief Enable dropout

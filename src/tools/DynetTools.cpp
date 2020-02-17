@@ -80,7 +80,7 @@ void dynet_initialization(unsigned random_seed)
    * \param model dynet::ParameterCollection to contain parameters
    * \param layers Layers description
    */
-MLP::MLP(dynet::ParameterCollection& model,std::vector<Layer> layers)
+MLP::MLP(dynet::ParameterCollection& model,const std::vector<Layer>& layers)
 {
     // Verify layers compatibility
     for (unsigned l = 0; l < layers.size() - 1; ++l) {
@@ -101,7 +101,7 @@ MLP::MLP(dynet::ParameterCollection& model,std::vector<Layer> layers)
    * \param model [description]
    * \param layer [description]
    */
-void MLP::append(dynet::ParameterCollection& model, Layer layer)
+void MLP::append(dynet::ParameterCollection& model, const Layer& layer)
 {
     // Check compatibility
     if (LAYERS > 0)
@@ -135,7 +135,7 @@ void MLP::append(dynet::ParameterCollection& model, Layer layer)
    *
    * \return [description]
    */
-dynet::Expression MLP::run(dynet::Expression& x,dynet::ComputationGraph& cg)
+dynet::Expression MLP::run(const dynet::Expression& x,dynet::ComputationGraph& cg)
 {
     // dynet::Expression for the current hidden state
     dynet::Expression h_cur = x;
@@ -178,7 +178,7 @@ dynet::Expression MLP::run(dynet::Expression& x,dynet::ComputationGraph& cg)
    * \param cg Computation graph
    * \return dynet::Expression for the negative log likelihood on the batch
    */
-dynet::Expression MLP::get_nll(dynet::Expression& x,std::vector<unsigned> labels,dynet::ComputationGraph& cg)
+dynet::Expression MLP::get_nll(const dynet::Expression& x,const std::vector<unsigned>& labels,dynet::ComputationGraph& cg)
 {
     // compute output
     dynet::Expression y = run(x, cg);
@@ -197,7 +197,7 @@ dynet::Expression MLP::get_nll(dynet::Expression& x,std::vector<unsigned> labels
    *
    * \return Label index
    */
-int MLP::predict(dynet::Expression& x,dynet::ComputationGraph& cg)
+int MLP::predict(const dynet::Expression& x,dynet::ComputationGraph& cg)
 {
     // run MLP to get class distribution
     dynet::Expression y = run(x, cg);
@@ -208,7 +208,7 @@ int MLP::predict(dynet::Expression& x,dynet::ComputationGraph& cg)
     for (unsigned i = 1; i < probs.size(); ++i) {
       if (probs[i] > probs[argmax])
         argmax = i;
-    }
+	}
 
     return argmax;
 }

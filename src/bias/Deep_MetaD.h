@@ -50,6 +50,7 @@ private:
 	unsigned fes_bsize;
 	unsigned bias_bsize;
 	unsigned md_bsize;
+	unsigned md_nepoch;
 	unsigned mc_bsize;
 	
 	bool firsttime;
@@ -89,6 +90,9 @@ private:
 	std::vector<float> bias_record;
 	std::vector<float> weight_record;
 	std::vector<float> fes_random;
+	std::vector<float> zero_args;
+	std::vector<float> bias_zero_args;
+	std::vector<float> fes_zero_args;
 	std::vector<float> arg_init;
 	std::vector<float> arg_min;
 	std::vector<float> arg_max;
@@ -113,6 +117,10 @@ private:
 	
 	std::vector<std::vector<dynet::Parameter>> bias_params;
 	std::vector<std::vector<dynet::Parameter>> fes_params;
+	
+	Value* value_fes;
+	Value* value_bloss;
+	Value* value_floss;
 
 	dynet::ParameterCollection pcv;
 	dynet::ParameterCollection pcf;
@@ -133,12 +141,13 @@ public:
 	void prepare();
 	static void registerKeywords(Keywords& keys);
 	
-	float update_fes();
-	float update_bias();
+	float update_fes(std::vector<float>& fes_update);
+	float update_bias(const std::vector<float>& fes_update);
 	
 	unsigned get_random_seed() const {return random_seed;}
 	void hybrid_monte_carlo(std::vector<float>& init_coords);
-	float calc_energy(const std::vector<float>& args,std::vector<float>& deriv);
+	float calc_bias(const std::vector<float>& args,std::vector<float>& deriv);
+	float calc_fes(const std::vector<float>& args,std::vector<float>& deriv);
 
 	//~ void set_parameters();
 };
