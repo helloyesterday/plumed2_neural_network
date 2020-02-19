@@ -27,9 +27,6 @@
 namespace PLMD {
 namespace dytools {
 
-dynet::Trainer* new_traniner(const std::string& algorithm,dynet::ParameterCollection& pc,std::string& fullname);
-dynet::Trainer* new_traniner(const std::string& algorithm,dynet::ParameterCollection& pc,const std::vector<float>& params,std::string& fullname);
-
 /**
  * \ingroup ffbuilders
  * Common activation functions used in multilayer perceptrons
@@ -52,6 +49,10 @@ enum Activation {
 	SELF_NORMALIZING_TANH, /**< `SELF_NORMALIZING_TANH` : Self normalizing tanh (SNTANH) \f$x\longrightarrow 1.592537419722831*tanh(x)\f$ */
 	SELF_NORMALIZING_ASINH /**< `SELF_NORMALIZING_ASINH` : Self normalizing asinh (SNASINH) \f$x\longrightarrow 1.256734802399369*asinh(x)\f$ */
 };
+
+std::vector<float> get_output_and_gradient(dynet::ComputationGraph& cg,dynet::Expression& inputs,dynet::Expression& output,std::vector<float>& deriv);
+dynet::Trainer* new_traniner(const std::string& algorithm,dynet::ParameterCollection& pc,std::string& fullname);
+dynet::Trainer* new_traniner(const std::string& algorithm,dynet::ParameterCollection& pc,const std::vector<float>& params,std::string& fullname);
 
 Activation activation_function(const std::string& a);
 
@@ -302,7 +303,9 @@ public:
   }
   
   void set_parameters(const std::vector<float>&);
+  void set_parameters(const std::vector<float>&,unsigned,unsigned);
   std::vector<float> get_parameters();
+  std::vector<float> get_parameters(unsigned,unsigned);
 
 private:
   //~ inline dynet::Expression activate(dynet::Expression h, Activation f);
@@ -311,14 +314,20 @@ private:
 
 class MLP_energy {
 public:
-	explicit MLP_energy():_has_periodic(false),ncv(0),nhidden(0),energy_scale(1) {}
-	explicit MLP_energy(unsigned _ncv):_has_periodic(false),ncv(_ncv),nhidden(0),energy_scale(1) {set_cvs_number(ncv);}
+	explicit MLP_energy():_has_periodic(false),ncv(0),nhidden(0),energy_scale(1),energy_shift(0) {}
+	explicit MLP_energy(unsigned _ncv):_has_periodic(false),ncv(_ncv),nhidden(0),energy_scale(1),energy_shift(0) {set_cvs_number(ncv);}
 	
 	bool has_periodic() const {return _has_periodic;}
 	float get_energy_scale() const {return energy_scale;}
+	float get_energy_shift() const {return energy_shift;}
+	std::vector<float> get_zero_cvs() const {return zero_cvs;}
 	unsigned get_cvs_number() const {return ncv;}
 
 	void set_energy_scale(float _energy_scale) {energy_scale=_energy_scale;}
+	void set_energy_shift(float _energy_shift) {energy_shift=_energy_shift;}
+	void set_zero_cvs(const std::vector<float>& _zero_cvs) {zero_cvs=_zero_cvs;}
+	void update_energy_shift(dynet::ComputationGraph& cg);
+	void update_energy_shift();
 		
 	void set_cvs_number(unsigned cv_number) {ncv=cv_number;ninput=ncv;
 		is_pcvs.assign(ncv,false);cvs_max.resize(ncv);cvs_min.resize(ncv);
@@ -337,10 +346,23 @@ public:
 	
 	void build_neural_network(dynet::ParameterCollection& pc);
 	
-	dynet::Expression energy(dynet::ComputationGraph& cg,dynet::Expression& x);
+	dynet::Expression MLP_output(dynet::ComputationGraph& cg,const dynet::Expression& x);
+	dynet::Expression energy(dynet::ComputationGraph& cg,const dynet::Expression& x){
+		return energy_scale*MLP_output(cg,x)+energy_shift;
+	}
 	
 	void clip(float left,float right,bool clip_last_layer=false)
 		{nn.clip(left,right,clip_last_layer);}
+	void clip_inplace(float left,float right,bool clip_last_layer=false)
+		{nn.clip_inplace(left,right,clip_last_layer);}
+		
+	float calc_energy_and_deriv (const std::vector<float>& cvs,std::vector<float>& deriv);
+	std::vector<float> calc_energy_and_deriv (const std::vector<float>& cvs,std::vector<float>& deriv,unsigned batch_size);
+	
+	//~ void align_zero(float energy);
+	//~ void align_zero(const std::vector<float> zero_cvs);
+	//~ void align_zero(const std::vector<float> zero_cvs,dynet::ComputationGraph& cg);
+	
 private:
 	const float pi=3.141592653589793238462643383279502884197169399375105820974944592307;
 	
@@ -350,6 +372,7 @@ private:
 	unsigned num_pcv;
 	unsigned nhidden;
 	float energy_scale;
+	float energy_shift;
 	
 	MLP nn;
 	// periodic
@@ -358,6 +381,7 @@ private:
 	std::vector<float> cvs_min;
 	std::vector<float> cvs_period;
 	std::vector<float> cvs_scale;
+	std::vector<float> zero_cvs;
 	
 	std::vector<Activation> act_funs;
 	std::vector<unsigned> hidden_layers;
@@ -402,6 +426,7 @@ private:
 	void set_expression(std::vector<dynet::real>& x_svalues,
 		std::vector<dynet::real>& x_tvalues);
 };
+
 
 
 }

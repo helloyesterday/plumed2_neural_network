@@ -42,8 +42,9 @@ private:
 	unsigned random_seed;
 	unsigned update_steps;
 	unsigned steps;
-	unsigned hmc_points;
-	unsigned tot_hmc_points;
+	unsigned update_cycle;
+	unsigned mc_points;
+	unsigned tot_mc_points;
 	unsigned hmc_steps;
 	unsigned fes_nepoch;
 	unsigned bias_nepoch;
@@ -52,21 +53,32 @@ private:
 	unsigned md_bsize;
 	unsigned md_nepoch;
 	unsigned mc_bsize;
+	unsigned random_output_steps;
 	
 	bool firsttime;
 	bool use_mw;
 	bool no_update;
 	bool is_arg_has_pbc;
 	bool use_diff_param;
+	bool use_hmc;
+	bool use_same_bias_factor;
+	bool clip_bias;
+	bool clip_bias_last;
+	bool clip_fes;
+	bool clip_fes_last;
 	
 	float energy_scale;
 	float scale_factor;
 	float bias_factor;
+	float mc_bias_factor;
 	float bias_scale;
-	float dt_hmc;
+	//~ float mc_bias_scale;
+	float dt_mc;
 	
-	float clip_left;
-	float clip_right;
+	float bias_clip_left;
+	float bias_clip_right;
+	float fes_clip_left;
+	float fes_clip_right;
 	float bias_clip_threshold;
 	float fes_clip_threshold;
 	
@@ -84,19 +96,20 @@ private:
 	std::vector<float> lrf;
 	std::vector<float> hpv;
 	std::vector<float> hpf;
+	std::vector<float> mc_arg_sd;
 	std::vector<float> hmc_arg_mass;
-	std::vector<float> hmc_arg_sd;
 	
 	std::vector<float> bias_record;
 	std::vector<float> weight_record;
 	std::vector<float> fes_random;
-	std::vector<float> zero_args;
 	std::vector<float> bias_zero_args;
 	std::vector<float> fes_zero_args;
 	std::vector<float> arg_init;
 	std::vector<float> arg_min;
 	std::vector<float> arg_max;
 	std::vector<float> arg_period;
+	
+	std::vector<std::string> arg_label;
 	
 	std::vector<std::vector<float>> arg_record;
 	std::vector<std::vector<float>> arg_random;
@@ -109,6 +122,7 @@ private:
 	std::string fes_file_in;
 	std::string fes_file_out;
 	std::string fes_algorithm;
+	std::string random_file;
 
 	std::vector<unsigned> ldv;
 	std::vector<unsigned> ldf;
@@ -117,6 +131,8 @@ private:
 	
 	std::vector<std::vector<dynet::Parameter>> bias_params;
 	std::vector<std::vector<dynet::Parameter>> fes_params;
+	
+	OFile orandom;
 	
 	Value* value_fes;
 	Value* value_bloss;
@@ -132,8 +148,8 @@ private:
 	dynet::Trainer *trainer_fes;
 	
 	double random_velocities(std::vector<float>& v);
-	float get_output_and_gradient(dynet::ComputationGraph& cg,dynet::Expression& inputs,dynet::Expression& output,std::vector<float>& deriv);
-	
+	void random_moves(std::vector<float>& coords);
+
 public:
 	explicit Deep_MetaD(const ActionOptions&);
 	~Deep_MetaD();
@@ -141,13 +157,25 @@ public:
 	void prepare();
 	static void registerKeywords(Keywords& keys);
 	
+	unsigned get_random_seed() const {return random_seed;}
+	std::vector<float> hybrid_monte_carlo(const std::vector<float>& init_coords,unsigned cycles);
+	std::vector<float> hybrid_monte_carlo(const std::vector<float>& init_coords){
+		return hybrid_monte_carlo(init_coords,mc_points);
+	}
+	std::vector<float> metropolis_monte_carlo(const std::vector<float>& init_coords,unsigned cycles);
+	std::vector<float> metropolis_monte_carlo(const std::vector<float>& init_coords){
+		return metropolis_monte_carlo(init_coords,mc_points);
+	}
+	
 	float update_fes(std::vector<float>& fes_update);
 	float update_bias(const std::vector<float>& fes_update);
 	
-	unsigned get_random_seed() const {return random_seed;}
-	void hybrid_monte_carlo(std::vector<float>& init_coords);
-	float calc_bias(const std::vector<float>& args,std::vector<float>& deriv);
-	float calc_fes(const std::vector<float>& args,std::vector<float>& deriv);
+	float calc_bias(const std::vector<float>& cvs,std::vector<float>& deriv){
+		return nnv.calc_energy_and_deriv(cvs,deriv);
+	}
+	float calc_fes(const std::vector<float>& cvs,std::vector<float>& deriv){
+		return nnf.calc_energy_and_deriv(cvs,deriv);
+	}
 
 	//~ void set_parameters();
 };

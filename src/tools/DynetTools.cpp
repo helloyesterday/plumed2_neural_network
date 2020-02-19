@@ -73,6 +73,14 @@ void dynet_initialization(unsigned random_seed)
 	dynet::initialize(params);
 }
 
+std::vector<float> get_output_and_gradient(dynet::ComputationGraph& cg,dynet::Expression& inputs,dynet::Expression& output,std::vector<float>& deriv)
+{
+	std::vector<float> out=dynet::as_vector(cg.forward(output));
+	cg.backward(output,true);
+	deriv=dynet::as_vector(inputs.gradient());
+	return out;
+}
+
   /**
    * \brief Returns a Multilayer perceptron
    * \details Creates a feedforward multilayer perceptron based on a list of layer descriptions
@@ -251,6 +259,21 @@ std::vector<float> MLP::get_parameters()
 	return param_values;
 }
 
+std::vector<float> MLP::get_parameters(unsigned i,unsigned j)
+{
+	if(i>=params.size())
+	{
+		std::cerr<<"ERROR! The first index of the parameter overflow!"<<std::endl;
+		exit(-1);
+	}
+	if(j>=params[i].size())
+	{
+		std::cerr<<"ERROR! The second index of the parameter overflow!"<<std::endl;
+		exit(-1);
+	}
+	return as_vector(*params[i][j].values());
+}
+
 void MLP::set_parameters(const std::vector<float>& param_values)
 {
 	if(param_values.size()<params_num)
@@ -271,8 +294,22 @@ void MLP::set_parameters(const std::vector<float>& param_values)
 	}
 }
 
+void MLP::set_parameters(const std::vector<float>& new_params,unsigned i,unsigned j)
+{
+	if(i>=params.size())
+	{
+		std::cerr<<"ERROR! The first index of the parameter overflow!"<<std::endl;
+		exit(-1);
+	}
+	if(j>=params[i].size())
+	{
+		std::cerr<<"ERROR! The second index of the parameter overflow!"<<std::endl;
+		exit(-1);
+	}
+	params[i][j].set_value(new_params);
+}
 
-dynet::Expression MLP_energy::energy(dynet::ComputationGraph& cg,dynet::Expression& x)
+dynet::Expression MLP_energy::MLP_output(dynet::ComputationGraph& cg,const dynet::Expression& x)
 {
 	dynet::Expression inputs;
 	if(_has_periodic)
@@ -290,7 +327,7 @@ dynet::Expression MLP_energy::energy(dynet::ComputationGraph& cg,dynet::Expressi
 	}
 	else
 		inputs=x;
-	return energy_scale*nn.run(inputs,cg);
+	return nn.run(inputs,cg);
 }
 
 void MLP_energy::set_periodic(const std::vector<bool> _is_pcvs)
@@ -345,6 +382,38 @@ void MLP_energy::build_neural_network(dynet::ParameterCollection& pc)
 		ldim=hidden_layers[i];
 	}
 	nn.append(pc,Layer(ldim,1,Activation::LINEAR,0));
+}
+
+float MLP_energy::calc_energy_and_deriv(const std::vector<float>& cvs,std::vector<float>& deriv)
+{
+	dynet::ComputationGraph cg;
+	dynet::Expression inputs=dynet::input(cg,{ncv},&cvs);
+	dynet::Expression output=energy(cg,inputs);
+	std::vector<float> out(get_output_and_gradient(cg,inputs,output,deriv));
+	return out[0];
+}
+	
+std::vector<float> MLP_energy::calc_energy_and_deriv (const std::vector<float>& cvs,std::vector<float>& deriv,unsigned batch_size)
+{
+	dynet::ComputationGraph cg;
+	dynet::Dim dim({ncv},batch_size);
+	dynet::Expression inputs=dynet::input(cg,dim,&cvs);
+	dynet::Expression output=energy(cg,inputs);
+	return get_output_and_gradient(cg,inputs,output,deriv);
+}
+
+void MLP_energy::update_energy_shift(dynet::ComputationGraph& cg)
+{
+	dynet::Expression inputs=dynet::input(cg,{ncv},&zero_cvs);
+	dynet::Expression output=MLP_output(cg,inputs);
+	std::vector<float> out=dynet::as_vector(cg.forward(output));
+	energy_shift=-energy_scale*out[0];
+}
+
+void MLP_energy::update_energy_shift()
+{
+	dynet::ComputationGraph cg;
+	update_energy_shift(cg);
 }
 
 WGAN::WGAN(MLP& _nn,unsigned _bsize,unsigned _ntarget,
@@ -584,7 +653,6 @@ dynet::Trainer* new_traniner(const std::string& algorithm,dynet::ParameterCollec
 	}
 	return NULL;
 }
-
 
 }
 }
