@@ -39,12 +39,15 @@ private:
 	unsigned narg;
 	unsigned nlv;
 	unsigned nlf;
-	unsigned random_seed;
+	unsigned dynet_random_seed;
 	unsigned update_steps;
 	unsigned steps;
 	unsigned update_cycle;
 	unsigned mc_points;
 	unsigned tot_mc_points;
+	unsigned tot_md_points;
+	unsigned sw_mc_points;
+	unsigned sw_md_points;
 	unsigned hmc_steps;
 	unsigned fes_nepoch;
 	unsigned bias_nepoch;
@@ -54,6 +57,9 @@ private:
 	unsigned md_nepoch;
 	unsigned mc_bsize;
 	unsigned random_output_steps;
+	unsigned mw_size;
+	unsigned sw_size;
+	unsigned ncores;
 	
 	bool firsttime;
 	bool use_mw;
@@ -91,6 +97,9 @@ private:
 	std::uniform_real_distribution<double> rand_prob;
 	
 	std::vector<bool> arg_pbc;
+	std::vector<unsigned> mc_seeds;
+	std::vector<unsigned> md_ids;
+	std::vector<unsigned> mc_ids;
 	
 	std::vector<float> lrv;
 	std::vector<float> lrf;
@@ -100,7 +109,7 @@ private:
 	std::vector<float> hmc_arg_mass;
 	
 	std::vector<float> bias_record;
-	std::vector<float> weight_record;
+	//~ std::vector<float> weight_record;
 	std::vector<float> fes_random;
 	std::vector<float> bias_zero_args;
 	std::vector<float> fes_zero_args;
@@ -111,8 +120,8 @@ private:
 	
 	std::vector<std::string> arg_label;
 	
-	std::vector<std::vector<float>> arg_record;
-	std::vector<std::vector<float>> arg_random;
+	std::vector<float> arg_record;
+	std::vector<float> arg_random;
 	
 	std::vector<std::normal_distribution<float>> ndist;
 
@@ -157,7 +166,7 @@ public:
 	void prepare();
 	static void registerKeywords(Keywords& keys);
 	
-	unsigned get_random_seed() const {return random_seed;}
+	unsigned get_random_seed() const {return dynet_random_seed;}
 	std::vector<float> hybrid_monte_carlo(const std::vector<float>& init_coords,unsigned cycles);
 	std::vector<float> hybrid_monte_carlo(const std::vector<float>& init_coords){
 		return hybrid_monte_carlo(init_coords,mc_points);
@@ -167,8 +176,8 @@ public:
 		return metropolis_monte_carlo(init_coords,mc_points);
 	}
 	
-	float update_fes(std::vector<float>& fes_update);
-	float update_bias(const std::vector<float>& fes_update);
+	float update_fes();
+	float update_bias();
 	
 	float calc_bias(const std::vector<float>& cvs,std::vector<float>& deriv){
 		return nnv.calc_energy_and_deriv(cvs,deriv);
