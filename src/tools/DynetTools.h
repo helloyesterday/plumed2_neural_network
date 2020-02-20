@@ -134,7 +134,7 @@ inline dynet::Expression dy_act_fun(dynet::Expression h, Activation f)
 	}
 }
 
-void dynet_initialization(unsigned random_seed);
+void dynet_initialization(unsigned random_seed,bool use_mpi=false);
 
 /**
  * \ingroup ffbuilders
@@ -312,10 +312,10 @@ private:
   //~ inline dynet::Expression activate_grad(dynet::Expression h, Activation f);
 };
 
-class MLP_energy {
+class MLP_energy: public MLP {
 public:
-	explicit MLP_energy():_has_periodic(false),ncv(0),nhidden(0),energy_scale(1),energy_shift(0) {}
-	explicit MLP_energy(unsigned _ncv):_has_periodic(false),ncv(_ncv),nhidden(0),energy_scale(1),energy_shift(0) {set_cvs_number(ncv);}
+	explicit MLP_energy():MLP(),_has_periodic(false),ncv(0),nhidden(0),energy_scale(1),energy_shift(0) {}
+	explicit MLP_energy(unsigned _ncv):MLP(),_has_periodic(false),ncv(_ncv),nhidden(0),energy_scale(1),energy_shift(0) {set_cvs_number(ncv);}
 	
 	bool has_periodic() const {return _has_periodic;}
 	float get_energy_scale() const {return energy_scale;}
@@ -351,17 +351,13 @@ public:
 		return energy_scale*MLP_output(cg,x)+energy_shift;
 	}
 	
-	void clip(float left,float right,bool clip_last_layer=false)
-		{nn.clip(left,right,clip_last_layer);}
-	void clip_inplace(float left,float right,bool clip_last_layer=false)
-		{nn.clip_inplace(left,right,clip_last_layer);}
+	//~ void clip(float left,float right,bool clip_last_layer=false)
+		//~ {nn.clip(left,right,clip_last_layer);}
+	//~ void clip_inplace(float left,float right,bool clip_last_layer=false)
+		//~ {nn.clip_inplace(left,right,clip_last_layer);}
 		
 	float calc_energy_and_deriv (const std::vector<float>& cvs,std::vector<float>& deriv);
 	std::vector<float> calc_energy_and_deriv (const std::vector<float>& cvs,std::vector<float>& deriv,unsigned batch_size);
-	
-	//~ void align_zero(float energy);
-	//~ void align_zero(const std::vector<float> zero_cvs);
-	//~ void align_zero(const std::vector<float> zero_cvs,dynet::ComputationGraph& cg);
 	
 private:
 	const float pi=3.141592653589793238462643383279502884197169399375105820974944592307;
@@ -374,7 +370,7 @@ private:
 	float energy_scale;
 	float energy_shift;
 	
-	MLP nn;
+	//~ MLP nn;
 	// periodic
 	std::vector<bool> is_pcvs;
 	std::vector<float> cvs_max;

@@ -60,16 +60,16 @@ Activation activation_function(const std::string& a)
 	exit(-1);
 }
 
-void dynet_initialization(unsigned random_seed)
+void dynet_initialization(unsigned random_seed,bool use_mpi)
 {
 	int cc=1;
 	char pp[]="plumed";
 	char *vv[]={pp};
 	char** ivv=vv;
-	dynet::DynetParams params = dynet::extract_dynet_params(cc,ivv,true);
+	dynet::DynetParams params = dynet::extract_dynet_params(cc,ivv,use_mpi);
 
 	params.random_seed=random_seed;
-	
+
 	dynet::initialize(params);
 }
 
@@ -327,7 +327,7 @@ dynet::Expression MLP_energy::MLP_output(dynet::ComputationGraph& cg,const dynet
 	}
 	else
 		inputs=x;
-	return nn.run(inputs,cg);
+	return run(inputs,cg);
 }
 
 void MLP_energy::set_periodic(const std::vector<bool> _is_pcvs)
@@ -378,10 +378,10 @@ void MLP_energy::build_neural_network(dynet::ParameterCollection& pc)
 	unsigned ldim=ninput;
 	for(unsigned i=0;i!=nhidden;++i)
 	{
-		nn.append(pc,Layer(ldim,hidden_layers[i],act_funs[i],0));
+		append(pc,Layer(ldim,hidden_layers[i],act_funs[i],0));
 		ldim=hidden_layers[i];
 	}
-	nn.append(pc,Layer(ldim,1,Activation::LINEAR,0));
+	append(pc,Layer(ldim,1,Activation::LINEAR,0));
 }
 
 float MLP_energy::calc_energy_and_deriv(const std::vector<float>& cvs,std::vector<float>& deriv)
