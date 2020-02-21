@@ -48,6 +48,8 @@ private:
 	unsigned tot_md_points;
 	unsigned sw_mc_points;
 	unsigned sw_md_points;
+	unsigned sc_mc_points;
+	unsigned sc_md_points;
 	unsigned hmc_steps;
 	unsigned fes_nepoch;
 	unsigned bias_nepoch;
@@ -63,6 +65,7 @@ private:
 	
 	bool firsttime;
 	bool use_mw;
+	bool use_mpi;
 	bool no_update;
 	bool is_arg_has_pbc;
 	bool use_diff_param;
@@ -97,7 +100,7 @@ private:
 	std::uniform_real_distribution<double> rand_prob;
 	
 	std::vector<bool> arg_pbc;
-	std::vector<unsigned> mc_seeds;
+	//~ std::vector<unsigned> mc_seeds;
 	std::vector<unsigned> md_ids;
 	std::vector<unsigned> mc_ids;
 	
@@ -122,6 +125,8 @@ private:
 	
 	std::vector<float> arg_record;
 	std::vector<float> arg_random;
+	
+	std::vector<float> mc_start_args;
 	
 	std::vector<std::normal_distribution<float>> ndist;
 
@@ -167,17 +172,11 @@ public:
 	static void registerKeywords(Keywords& keys);
 	
 	unsigned get_random_seed() const {return dynet_random_seed;}
-	std::vector<float> hybrid_monte_carlo(const std::vector<float>& init_coords,unsigned cycles);
-	std::vector<float> hybrid_monte_carlo(const std::vector<float>& init_coords){
-		return hybrid_monte_carlo(init_coords,mc_points);
-	}
-	std::vector<float> metropolis_monte_carlo(const std::vector<float>& init_coords,unsigned cycles);
-	std::vector<float> metropolis_monte_carlo(const std::vector<float>& init_coords){
-		return metropolis_monte_carlo(init_coords,mc_points);
-	}
+	void hybrid_monte_carlo(unsigned cycles);
+	void metropolis_monte_carlo(unsigned cycles);
 	
-	float update_fes();
-	float update_bias();
+	float update_fes(std::vector<float>& fes_update);
+	float update_bias(const std::vector<float>& fes_update);
 	
 	float calc_bias(const std::vector<float>& cvs,std::vector<float>& deriv){
 		return nnv.calc_energy_and_deriv(cvs,deriv);
