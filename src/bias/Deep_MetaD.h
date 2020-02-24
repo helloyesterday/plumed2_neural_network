@@ -83,6 +83,9 @@ private:
 	float bias_scale;
 	//~ float mc_bias_scale;
 	float dt_mc;
+	float bias_zero_weight;
+	float fes_zero_weight;
+	float logsumexp_m_beta_F;
 	
 	float bias_clip_left;
 	float bias_clip_right;
@@ -95,6 +98,8 @@ private:
 	double beta;
 	double kB;
 	double kBT;
+	double bias_now;
+	double rct;
 	
 	std::default_random_engine rdgen;
 	std::uniform_real_distribution<double> rand_prob;
@@ -114,8 +119,10 @@ private:
 	std::vector<float> bias_record;
 	//~ std::vector<float> weight_record;
 	std::vector<float> fes_random;
+	std::vector<float> fes_update;
 	std::vector<float> bias_zero_args;
 	std::vector<float> fes_zero_args;
+	
 	std::vector<float> arg_init;
 	std::vector<float> arg_min;
 	std::vector<float> arg_max;
@@ -123,6 +130,7 @@ private:
 	
 	std::vector<std::string> arg_label;
 	
+	std::vector<float> args_now;
 	std::vector<float> arg_record;
 	std::vector<float> arg_random;
 	
@@ -168,6 +176,7 @@ public:
 	explicit Deep_MetaD(const ActionOptions&);
 	~Deep_MetaD();
 	void calculate();
+	void update();
 	void prepare();
 	static void registerKeywords(Keywords& keys);
 	
@@ -175,8 +184,20 @@ public:
 	void hybrid_monte_carlo(unsigned cycles);
 	void metropolis_monte_carlo(unsigned cycles);
 	
-	float update_fes(std::vector<float>& fes_update);
-	float update_bias(const std::vector<float>& fes_update);
+	float update_fes(const std::vector<float>& old_arg_record,
+		const std::vector<float>& old_bias_record,
+		const std::vector<float>& old_arg_random,
+		const std::vector<float>& old_fes_random,
+		std::vector<float>& new_arg_record,
+		std::vector<float>& new_bias_record,
+		std::vector<float>& new_arg_random,
+		std::vector<float>& new_fes_random,
+		std::vector<float>& update_fes_random);
+	float update_bias(const std::vector<float>& vec_arg_record,
+		const std::vector<float>& vec_bias_record,
+		const std::vector<float>& vec_arg_random,
+		const std::vector<float>& origin_fes_random,
+		const std::vector<float>& update_fes_random);
 	
 	float calc_bias(const std::vector<float>& cvs,std::vector<float>& deriv){
 		return nnv.calc_energy_and_deriv(cvs,deriv);
