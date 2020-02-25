@@ -314,20 +314,20 @@ private:
 
 class MLP_energy: public MLP {
 public:
-	explicit MLP_energy():MLP(),_has_periodic(false),ncv(0),nhidden(0),energy_scale(1),energy_shift(0) {}
-	explicit MLP_energy(unsigned _ncv):MLP(),_has_periodic(false),ncv(_ncv),nhidden(0),energy_scale(1),energy_shift(0) {set_cvs_number(ncv);}
+	explicit MLP_energy():MLP(),_has_periodic(false),ncv(0),nhidden(0),energy_scale(1) {}
+	explicit MLP_energy(unsigned _ncv):MLP(),_has_periodic(false),ncv(_ncv),nhidden(0),energy_scale(1) {set_cvs_number(ncv);}
 	
 	bool has_periodic() const {return _has_periodic;}
 	float get_energy_scale() const {return energy_scale;}
-	float get_energy_shift() const {return energy_shift;}
+	//~ float get_energy_shift() const {return energy_shift;}
 	std::vector<float> get_zero_cvs() const {return zero_cvs;}
 	unsigned get_cvs_number() const {return ncv;}
 
 	void set_energy_scale(float _energy_scale) {energy_scale=_energy_scale;}
-	void set_energy_shift(float _energy_shift) {energy_shift=_energy_shift;}
+	//~ void set_energy_shift(float _energy_shift) {energy_shift=_energy_shift;}
 	void set_zero_cvs(const std::vector<float>& _zero_cvs) {zero_cvs=_zero_cvs;}
-	void update_energy_shift(dynet::ComputationGraph& cg);
-	void update_energy_shift();
+	//~ void update_energy_shift(dynet::ComputationGraph& cg);
+	//~ void update_energy_shift();
 		
 	void set_cvs_number(unsigned cv_number) {ncv=cv_number;ninput=ncv;
 		is_pcvs.assign(ncv,false);cvs_max.resize(ncv);cvs_min.resize(ncv);
@@ -348,7 +348,7 @@ public:
 	
 	dynet::Expression MLP_output(dynet::ComputationGraph& cg,const dynet::Expression& x);
 	dynet::Expression energy(dynet::ComputationGraph& cg,const dynet::Expression& x){
-		return energy_scale*MLP_output(cg,x)+energy_shift;
+		return energy_scale*MLP_output(cg,x);
 	}
 	
 	//~ void clip(float left,float right,bool clip_last_layer=false)
@@ -368,7 +368,7 @@ private:
 	unsigned num_pcv;
 	unsigned nhidden;
 	float energy_scale;
-	float energy_shift;
+	//~ float energy_shift;
 	
 	//~ MLP nn;
 	// periodic

@@ -402,19 +402,19 @@ std::vector<float> MLP_energy::calc_energy_and_deriv (const std::vector<float>& 
 	return get_output_and_gradient(cg,inputs,output,deriv);
 }
 
-void MLP_energy::update_energy_shift(dynet::ComputationGraph& cg)
-{
-	dynet::Expression inputs=dynet::input(cg,{ncv},&zero_cvs);
-	dynet::Expression output=MLP_output(cg,inputs);
-	std::vector<float> out=dynet::as_vector(cg.forward(output));
-	energy_shift=-energy_scale*out[0];
-}
+//~ void MLP_energy::update_energy_shift(dynet::ComputationGraph& cg)
+//~ {
+	//~ dynet::Expression inputs=dynet::input(cg,{ncv},&zero_cvs);
+	//~ dynet::Expression output=MLP_output(cg,inputs);
+	//~ std::vector<float> out=dynet::as_vector(cg.forward(output));
+	//~ energy_shift=-energy_scale*out[0];
+//~ }
 
-void MLP_energy::update_energy_shift()
-{
-	dynet::ComputationGraph cg;
-	update_energy_shift(cg);
-}
+//~ void MLP_energy::update_energy_shift()
+//~ {
+	//~ dynet::ComputationGraph cg;
+	//~ update_energy_shift(cg);
+//~ }
 
 WGAN::WGAN(MLP& _nn,unsigned _bsize,unsigned _ntarget,
 	std::vector<dynet::real>& x_svalues,
