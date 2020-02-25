@@ -51,12 +51,14 @@ private:
 	unsigned sc_mc_points;
 	unsigned sc_md_points;
 	unsigned hmc_steps;
+	unsigned fes_nbatch;
+	unsigned bias_nbatch;
 	unsigned fes_nepoch;
 	unsigned bias_nepoch;
 	unsigned fes_bsize;
 	unsigned bias_bsize;
 	unsigned md_bsize;
-	unsigned md_nepoch;
+	unsigned md_nbatch;
 	unsigned mc_bsize;
 	unsigned random_output_steps;
 	unsigned mw_size;
@@ -85,7 +87,7 @@ private:
 	float dt_mc;
 	float bias_zero_weight;
 	float fes_zero_weight;
-	float logsumexp_m_beta_F;
+	float log_Z;
 	
 	float bias_clip_left;
 	float bias_clip_right;
@@ -156,6 +158,8 @@ private:
 	
 	OFile orandom;
 	
+	Value* value_rct;
+	Value* value_rbias;
 	Value* value_fes;
 	Value* value_bloss;
 	Value* value_floss;
