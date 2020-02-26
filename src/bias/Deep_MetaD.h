@@ -64,6 +64,8 @@ private:
 	unsigned mw_size;
 	unsigned sw_size;
 	unsigned ncores;
+	unsigned bias_output_steps;
+	unsigned fes_output_steps;
 	
 	bool firsttime;
 	bool use_mw;
@@ -77,17 +79,20 @@ private:
 	bool clip_bias_last;
 	bool clip_fes;
 	bool clip_fes_last;
+	bool is_random_ouput;
+	bool is_bias_ouput;
+	bool is_fes_ouput;
 	
 	float energy_scale;
 	float scale_factor;
 	float bias_factor;
 	float mc_bias_factor;
 	float bias_scale;
-	//~ float mc_bias_scale;
 	float dt_mc;
-	float bias_zero_weight;
-	float fes_zero_weight;
+	float bias_loss_normal_weight;
+	float fes_loss_normal_weight;
 	float log_Z;
+	float log_fes_bsize;
 	
 	float bias_clip_left;
 	float bias_clip_right;
@@ -107,9 +112,9 @@ private:
 	std::uniform_real_distribution<double> rand_prob;
 	
 	std::vector<bool> arg_pbc;
-	//~ std::vector<unsigned> mc_seeds;
 	std::vector<unsigned> md_ids;
 	std::vector<unsigned> mc_ids;
+	std::vector<unsigned> grid_bins;
 	
 	std::vector<float> lrv;
 	std::vector<float> lrf;
@@ -117,13 +122,13 @@ private:
 	std::vector<float> hpf;
 	std::vector<float> mc_arg_sd;
 	std::vector<float> hmc_arg_mass;
+	std::vector<float> grid_space;
 	
 	std::vector<float> bias_record;
-	//~ std::vector<float> weight_record;
 	std::vector<float> fes_random;
 	std::vector<float> fes_update;
-	std::vector<float> bias_zero_args;
-	std::vector<float> fes_zero_args;
+	//~ std::vector<float> bias_zero_args;
+	//~ std::vector<float> fes_zero_args;
 	
 	std::vector<float> arg_init;
 	std::vector<float> arg_min;
@@ -147,6 +152,8 @@ private:
 	std::string fes_file_out;
 	std::string fes_algorithm;
 	std::string random_file;
+	std::string bias_output_file;
+	std::string fes_output_file;
 
 	std::vector<unsigned> ldv;
 	std::vector<unsigned> ldf;
@@ -157,6 +164,8 @@ private:
 	std::vector<std::vector<dynet::Parameter>> fes_params;
 	
 	OFile orandom;
+	OFile obias;
+	OFile ofes;
 	
 	Value* value_rct;
 	Value* value_rbias;
@@ -175,6 +184,7 @@ private:
 	
 	double random_velocities(std::vector<float>& v);
 	void random_moves(std::vector<float>& coords);
+	void write_grid_file(MLP_energy& nn,OFile& ogrid,const std::string& label);
 
 public:
 	explicit Deep_MetaD(const ActionOptions&);
@@ -209,6 +219,9 @@ public:
 	float calc_fes(const std::vector<float>& cvs,std::vector<float>& deriv){
 		return nnf.calc_energy_and_deriv(cvs,deriv);
 	}
+	
+	void write_bias_file(){return write_grid_file(nnv,obias,"bias");}
+	void write_fes_file(){return write_grid_file(nnf,ofes,"fes");}
 
 	//~ void set_parameters();
 };

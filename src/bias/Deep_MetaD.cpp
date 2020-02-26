@@ -72,8 +72,8 @@ void Deep_MetaD::registerKeywords(Keywords& keys)
 	keys.add("compulsory","FES_PARAM_OUTPUT","fes_parameters.data","the file to output the parameters of the neural network of the free energy surface");
 	keys.add("compulsory","BIAS_EPOCH_NUMBER","1","the number of epoch for training the neural networks for bias potential");
 	keys.add("compulsory","BATCH_SIZE","250","batch size in each epoch for training neural networks");
-	keys.add("compulsory","ZERO_REF_ARG","0","the reference arguments to make the energy of neural networks as zero");
-	keys.add("compulsory","ZERO_LOSS_WEIGHT","10","the weight factor of the loss function to align the energy of the reference structure to zero");
+	//~ keys.add("compulsory","ZERO_REF_ARG","0","the reference arguments to make the energy of neural networks as zero");
+	keys.add("compulsory","LOSS_NORMALIZE_WEIGHT","10","the weight factor of the loss function to normalize the energy of the reference structure to zero");
 	keys.add("compulsory","CLIP_LEFT","-0.5","the left value of the range to clip");
 	keys.add("compulsory","CLIP_RIGHT","0.5","the right value of the range to clip");
 	keys.add("compulsory","MC_SAMPLING_POINTS","1","the sampling points for hybrid monte carlo at a MD simulation step");
@@ -91,6 +91,11 @@ void Deep_MetaD::registerKeywords(Keywords& keys)
 	keys.addFlag("CLIP_BIAS_LAST_LAYER",false,"clip the last layer of the neural network of bias potential");
 	keys.addFlag("CLIP_FES_LAST_LAYER",false,"clip the last layer of the neural network of free energy");
 	
+	keys.add("optional","FES_OUTPUT_FILE","the file to output the value of free energy surface");
+	keys.add("optional","FES_OUTPUT_STEPS","the frequency to output the file of free energy surface");
+	keys.add("optional","BIAS_OUTPUT_FILE","the file to output the bias potential energy");
+	keys.add("optional","BIAS_OUTPUT_STEPS","the frequency to output the file of bias potential");
+	keys.add("optional","GRID_BINS","the number of bins for the grid to output the energy file");
 	keys.add("optional","RANDOM_POINTS_FILE","the file to output the random points of monte carlo");
 	keys.add("optional","RANDOM_OUTPUT_STEPS","(default=1) the frequency to output the random points file");
 	keys.add("optional","MC_BIAS_FACTOR","the well-tempered bias factor for monte carlo");
@@ -99,8 +104,8 @@ void Deep_MetaD::registerKeywords(Keywords& keys)
 	keys.add("optional","CLIP_THRESHOLD","the clip threshold for training the neural network");
 	keys.add("optional","FES_CLIP_LEFT","the left value of the range to clip the free energy surface");
 	keys.add("optional","FES_CLIP_RIGHT","the right value of the range to clip the free energy surface");
-	keys.add("optional","FES_ZERO_REF_ARG","the reference arguments to make the free energy as zero");
-	keys.add("optional","FES_ZERO_LOSS_WEIGHT","the weight factor of the loss function to align the energy of the reference structure to zero");
+	//~ keys.add("optional","FES_ZERO_REF_ARG","the reference arguments to make the free energy as zero");
+	keys.add("optional","FES_LOSS_NORMALIZE_WEIGHT","the weight factor of the loss function to normalize the energy of the reference structure to zero");
 	keys.add("optional","FES_BATCH_SIZE","batch size in each epoch for training free energy surface");
 	keys.add("optional","FES_LAYERS_NUMBER","the hidden layers of the neural network for the FES");
 	keys.add("optional","FES_LAYER_DIMENSIONS","the dimension of each hidden layers of the neural network for the FES");
@@ -182,20 +187,20 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	}
 	std::vector<std::string> saff=safv;
 	
-	parse("ZERO_LOSS_WEIGHT",bias_zero_weight);
-	fes_zero_weight=bias_zero_weight;
-	parseVector("ZERO_REF_ARG",bias_zero_args);
-	if(bias_zero_args.size()!=narg)
-	{
-		if(bias_zero_args.size()==1)
-		{
-			float val=bias_zero_args[0];
-			bias_zero_args.assign(narg,val);
-		}
-		else
-			plumed_merror("the size of ZERO_REF_ARG mismatch!");
-	}
-	fes_zero_args=bias_zero_args;
+	parse("LOSS_NORMALIZE_WEIGHT",bias_loss_normal_weight);
+	fes_loss_normal_weight=bias_loss_normal_weight;
+	//~ parseVector("ZERO_REF_ARG",bias_zero_args);
+	//~ if(bias_zero_args.size()!=narg)
+	//~ {
+		//~ if(bias_zero_args.size()==1)
+		//~ {
+			//~ float val=bias_zero_args[0];
+			//~ bias_zero_args.assign(narg,val);
+		//~ }
+		//~ else
+			//~ plumed_merror("the size of ZERO_REF_ARG mismatch!");
+	//~ }
+	//~ fes_zero_args=bias_zero_args;
 	
 	afv.resize(nlv);
 	for(unsigned i=0;i!=nlv;++i)
@@ -250,8 +255,14 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	parse("BIAS_PARAM_READ_FILE",bias_file_in);
 	parse("FES_PARAM_READ_FILE",fes_file_in);
 	parse("RANDOM_POINTS_FILE",random_file);
+	parse("BIAS_OUTPUT_FILE",bias_output_file);
+	parse("FES_OUTPUT_FILE",fes_output_file);
 	random_output_steps=1;
+	bias_output_steps=1;
+	fes_output_steps=1;
 	parse("RANDOM_OUTPUT_STEPS",random_output_steps);
+	parse("BIAS_OUTPUT_STEPS",bias_output_steps);
+	parse("FES_OUTPUT_STEPS",fes_output_steps);
 	
 	parse("SCALE_FACTOR",scale_factor);
 	parse("WT_BIAS_FACTOR",bias_factor);
@@ -342,6 +353,8 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	parse("MC_TIMESTEP",dt_mc);
 	parseVector("MC_ARG_STDEV",mc_arg_sd);
 	
+	parseVector("GRID_BINS",grid_bins);
+	
 	parse("UPDATE_STEPS",update_steps);
 	sc_md_points=update_steps;
 	sc_mc_points=update_steps*mc_points;
@@ -413,8 +426,10 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 	{
 		mc_start_args.resize(narg*sw_size);
 		
+		is_random_ouput=false;
 		if(random_file.size()>0)
 		{
+			is_random_ouput=true;
 			orandom.link(*this);
 			if(use_mw)
 			{
@@ -432,10 +447,74 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 			orandom.addConstantField("ITERATION");
 		}
 		
+		is_bias_ouput=false;
+		if(bias_output_file.size()>0)
+		{
+			is_bias_ouput=true;
+			obias.link(*this);
+			if(use_mw)
+			{
+				unsigned rank=0;
+				if(comm.Get_rank()==0)
+					rank=multi_sim_comm.Get_rank();
+				comm.Bcast(rank,0);
+				if(rank>0)
+					bias_output_file="/dev/null";
+				obias.enforceSuffix("");
+			}
+			obias.open(bias_output_file.c_str());
+			obias.fmtField(" %f");
+			obias.addConstantField("ITERATION");
+		}
+		
+		is_fes_ouput=false;
+		if(fes_output_file.size()>0)
+		{
+			is_fes_ouput=true;
+			ofes.link(*this);
+			if(use_mw)
+			{
+				unsigned rank=0;
+				if(comm.Get_rank()==0)
+					rank=multi_sim_comm.Get_rank();
+				comm.Bcast(rank,0);
+				if(rank>0)
+					fes_output_file="/dev/null";
+				ofes.enforceSuffix("");
+			}
+			ofes.open(fes_output_file.c_str());
+			ofes.fmtField(" %f");
+			ofes.addConstantField("ITERATION");
+		}
+		
+		if(is_bias_ouput||is_fes_ouput)
+		{
+			if(grid_bins.size()==0)
+				grid_bins.assign(narg,100);
+			else if(grid_bins.size()!=narg)
+			{
+				if(grid_bins.size()==1)
+				{
+					unsigned bin=grid_bins[0];
+					grid_bins.assign(narg,bin);
+				}
+				else
+					plumed_merror("the number of GRID_BINS mismatch!");
+			}
+			grid_space.resize(narg);
+			for(unsigned i=0;i!=narg;++i)
+			{
+				plumed_massert(grid_bins[i]>0,"the value of GRID_BINS must be larger than 0!");
+				grid_space[i]=(arg_max[i]-arg_min[i])/grid_bins[i];
+				if(!arg_pbc[i])
+					++grid_bins[i];
+			}
+		}
+		
 		if(use_diff_param)
 		{
 			parse("FES_OPT_ALGORITHM",fes_algorithm);
-			parse("FES_ZERO_LOSS_WEIGHT",fes_zero_weight);
+			parse("FES_LOSS_NORMALIZE_WEIGHT",fes_loss_normal_weight);
 			
 			std::vector<float> _lrf;
 			parseVector("FES_LEARN_RATE",_lrf);
@@ -450,20 +529,20 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 			parse("FES_BATCH_SIZE",fes_bsize);
 			plumed_massert(tot_mc_points%fes_bsize==0,"the total sampling points of HMC must be divided exactly by FES_BATCH_SIZE");
 			
-			std::vector<float> _fes_zero_args;
-			parseVector("FES_ZERO_REF_ARG",_fes_zero_args);
-			if(_fes_zero_args.size()>0)
-				fes_zero_args=_fes_zero_args;
-			if(fes_zero_args.size()!=narg)
-			{
-				if(fes_zero_args.size()==1)
-				{
-					float val=fes_zero_args[0];
-					fes_zero_args.assign(narg,val);
-				}
-				else
-					plumed_merror("the size of FES_ZERO_REF_ARG mismatch!");
-			}
+			//~ std::vector<float> _fes_zero_args;
+			//~ parseVector("FES_ZERO_REF_ARG",_fes_zero_args);
+			//~ if(_fes_zero_args.size()>0)
+				//~ fes_zero_args=_fes_zero_args;
+			//~ if(fes_zero_args.size()!=narg)
+			//~ {
+				//~ if(fes_zero_args.size()==1)
+				//~ {
+					//~ float val=fes_zero_args[0];
+					//~ fes_zero_args.assign(narg,val);
+				//~ }
+				//~ else
+					//~ plumed_merror("the size of FES_ZERO_REF_ARG mismatch!");
+			//~ }
 			
 			parse("FES_CLIP_LEFT",fes_clip_left);
 			parse("FES_CLIP_RIGHT",fes_clip_right);
@@ -473,9 +552,10 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 		fes_nbatch=tot_mc_points/fes_bsize;
 		plumed_massert(tot_mc_points%(bias_nepoch*bias_nbatch)==0,"the number of MC samping points in each walker must be divided exactly by BATCH_SIZE*BIAS_EPOCH_NUMBER");
 		mc_bsize=tot_mc_points/(bias_nepoch*bias_nbatch);
+		log_fes_bsize=std::log(static_cast<double>(fes_bsize));
 		
-		nnv.set_zero_cvs(bias_zero_args);
-		nnf.set_zero_cvs(fes_zero_args);
+		//~ nnv.set_zero_cvs(bias_zero_args);
+		//~ nnf.set_zero_cvs(fes_zero_args);
 		
 		md_bsize=fes_bsize;
 		if(fes_bsize>tot_md_points)
@@ -589,9 +669,6 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 		log.printf("    with parameters output file: %s\n",fes_file_out.c_str());
 		if(fes_file_in.size()>0)
 			log.printf("    with parameters read file: %s\n",fes_file_in.c_str());
-		for(unsigned i=0;i!=narg;++i)
-			log.printf("    %dth CV \"%s\" with reference value %f(bias) and %f(fes).\n",int(i+1),arg_label[i].c_str(),bias_zero_args[i],fes_zero_args[i]);
-			
 		
 		log.printf("  with sampling of CVs from MD simulation: \n");
 		log.printf("    with sampling cycle for each traning update: %d.\n",int(update_steps));
@@ -626,7 +703,7 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 		log.printf("    with batch size for traning bias potential at political networks: %d.\n",int(bias_bsize));
 		log.printf("    with batch size for traning free energy surface at political networks: %d.\n",int(mc_bsize));
 		log.printf("    with number of epoch of mini batches for the political networks: %d.\n",int(bias_nbatch));
-		log.printf("    with weight for the zero energy structure: %f.\n",bias_zero_weight);
+		log.printf("    with weight for the loss fucntion to normalize the bias potential energy: %f.\n",bias_loss_normal_weight);
 		if(clip_bias)
 		{
 			if(clip_bias_last)
@@ -639,7 +716,7 @@ Deep_MetaD::Deep_MetaD(const ActionOptions& ao):
 		log.printf("    with batch size for traning bias potential at value network: %d.\n",int(md_bsize));
 		log.printf("    with batch size for traning free energy surface at value network: %d.\n",int(fes_bsize));
 		log.printf("    with number of epoch of mini batches for the value networks: %d.\n",int(fes_nbatch));
-		log.printf("    with weight for the zero energy structure: %f.\n",fes_zero_weight);
+		log.printf("    with weight for the loss fucntion to normalize the free energy surface: %f.\n",fes_loss_normal_weight);
 		if(clip_fes)
 		{
 			if(clip_fes_last)
@@ -659,7 +736,7 @@ Deep_MetaD::~Deep_MetaD()
 	{
 		delete trainer_bias;
 		delete trainer_fes;
-		if(random_file.size()>0)
+		if(is_random_ouput)
 			orandom.close();
 	}
 }
@@ -865,7 +942,7 @@ void Deep_MetaD::update()
 				}
 			}
 			
-			if(random_file.size()>0&&update_cycle%random_output_steps==0)
+			if(is_random_ouput&&update_cycle%random_output_steps==0)
 			{
 				if(!use_mw)
 				{
@@ -883,6 +960,11 @@ void Deep_MetaD::update()
 				}
 				orandom.flush();
 			}
+			
+			if(is_bias_ouput&&update_cycle%bias_output_steps==0)
+				write_bias_file();
+			if(is_fes_ouput&&update_cycle%fes_output_steps==0)
+				write_fes_file();
 						
 			value_rct->set(rct);
 			value_floss->set(floss);
@@ -925,30 +1007,22 @@ float Deep_MetaD::update_fes(const std::vector<float>& old_arg_record,
 	dynet::Expression fes_new=dynet::input(cg,fes_dim,&update_fes_batch);
 	dynet::Expression md_inputs=dynet::input(cg,md_dim,&arg_record_batch);
 	dynet::Expression mc_inputs=dynet::input(cg,mc_dim,&arg_random_batch);
-	//~ dynet::Expression zero_inputs=dynet::input(cg,{narg},&fes_zero_args);
 
 	dynet::Expression nnf_md=nnf.MLP_output(cg,md_inputs);
 	dynet::Expression nnf_mc=nnf.MLP_output(cg,mc_inputs);
-	//~ dynet::Expression nnv_zero=nnf.MLP_output(cg,zero_inputs);
 	
-	dynet::Expression fes_mc=dynet::transpose(energy_scale*nnf_mc);
-	dynet::Expression log_Z_mc=dynet::logsumexp_dim(beta*(fes_old/mc_bias_factor-fes_new-fes_mc),0);
-	//~ dynet::Expreesion Z_mc=dynet::exp(log_Z_mc);
+	dynet::Expression fes_mc=energy_scale*nnf_mc;
+	dynet::Expression weight_bias_mc=fes_old/mc_bias_factor-fes_new-dynet::transpose(fes_mc);
+	dynet::Expression log_Z_mc=dynet::logsumexp_dim(beta*weight_bias_mc,0);
 	
 	dynet::Expression md_weights=dynet::softmax(beta*bias_inputs);
 	dynet::Expression mc_weights=dynet::softmax(beta*(fes_old/mc_bias_factor-fes_new));
+	
 	dynet::Expression mean_sample=nnf_md*md_weights;
 	dynet::Expression mean_target=nnf_mc*mc_weights;
-	//~ dynet::Expression mean_Z=0.5*dynet::squared_norm(Z_mc-1.0);
-	dynet::Expression loss_Z=0.5*dynet::squared_norm(log_Z_mc-std::log(double(fes_bsize)));
-	//~ dynet::Expression loss_Z=0.5*dynet::squared_norm(log_Z_mc);
 	
-	//~ dynet::Expression mean_zeros=0.5*dynet::squared_norm(nnv_zero);
-	//~ dynet::Expression loss_align=0.5*dynet::squared_norm(mean_target);
-
-	//~ dynet::Expression loss=mean_sample-mean_target+mean_zeros*fes_zero_weight;
-	dynet::Expression loss=mean_sample-mean_target+loss_Z*fes_zero_weight;
-	//~ dynet::Expression loss=mean_sample-mean_target+loss_align;
+	dynet::Expression loss_Z=0.5*dynet::squared_norm(log_Z_mc-log_fes_bsize);
+	dynet::Expression loss=mean_sample-mean_target+loss_Z*fes_loss_normal_weight;
 
 	//~ unsigned seed=std::time(0);
 	//~ std::shuffle(fes_random.begin(),fes_random.end(),std::default_random_engine(seed));
@@ -1021,8 +1095,8 @@ float Deep_MetaD::update_fes(const std::vector<float>& old_arg_record,
 	
 	dynet::Dim arg_dim({narg,tot_mc_points});
 	dynet::Dim e_dim({tot_mc_points});
-	dynet::Expression tot_arg_random=dynet::input(cg,arg_dim,new_arg_random);
-	dynet::Expression tot_fes_old=dynet::input(cg,e_dim,new_fes_random);
+	dynet::Expression tot_arg_random=dynet::input(cg,arg_dim,&new_arg_random);
+	dynet::Expression tot_fes_old=dynet::input(cg,e_dim,&new_fes_random);
 	dynet::Expression tot_fes_new=nnf.energy(cg,tot_arg_random);
 	
 	update_fes_random=dynet::as_vector(cg.forward(tot_fes_new));
@@ -1058,12 +1132,10 @@ float Deep_MetaD::update_bias(const std::vector<float>& vec_arg_record,
 	dynet::Expression fes_new=dynet::input(cg,fes_dim,&update_fes_batch);
 	dynet::Expression md_inputs=dynet::input(cg,md_dim,&arg_record_batch);
 	dynet::Expression mc_inputs=dynet::input(cg,mc_dim,&arg_random_batch);
-	//~ dynet::Expression zero_inputs=dynet::input(cg,{narg},&bias_zero_args);
 	
 	dynet::Expression nnv_mc=nnv.MLP_output(cg,mc_inputs);
 	dynet::Expression bias_mc=dynet::transpose(energy_scale*nnv_mc);
 	dynet::Expression nnv_md=nnv.MLP_output(cg,md_inputs);
-	//~ dynet::Expression nnv_zero=nnv.MLP_output(cg,zero_inputs);
 	
 	dynet::Expression log_wbias_mc=fes_old/mc_bias_factor-fes_new/bias_factor;
 	
@@ -1071,11 +1143,13 @@ float Deep_MetaD::update_bias(const std::vector<float>& vec_arg_record,
 	//~ dynet::Expression log_Z_mc=dynet::logsumexp_dim(beta*log_m_F,0);
 	//~ dynet::Expression log_m_F_p_V=bias_mc/(bias_factor-1.0)+log_wbias_mc;
 	//~ dynet::Expression log_Zb_mc=dynet::logsumexp_dim(beta*log_m_F_p_V,0);
-	
-	dynet::Expression log_m_F_p_V=fes_old/mc_bias_factor-fes_new*(bias_factor+1.0)/bias_factor-bias_mc;
+	float rct_scale=(bias_factor+1.0)/bias_factor;
+	dynet::Expression log_m_F_p_V=fes_old/mc_bias_factor-fes_new*rct_scale-bias_mc;
 	dynet::Expression log_Zb=dynet::logsumexp_dim(beta*log_m_F_p_V,0);
-	dynet::Expression dy_rct=log_Z-log_Zb;
+	
 	//~ dynet::Expression dy_rct=log_Z_mc-log_Zb_mc;
+	dynet::Expression dy_rct=log_Z-log_Zb;
+	
 	dynet::Expression loss_rct=0.5*dynet::squared_norm(dy_rct);
 	
 	dynet::Expression mc_weights=dynet::softmax(beta*log_wbias_mc);
@@ -1099,12 +1173,7 @@ float Deep_MetaD::update_bias(const std::vector<float>& vec_arg_record,
 		mean_sample=nnv_md*md_weights;
 	}
 	
-	//~ dynet::Expression mean_zeros=0.5*dynet::squared_norm(nnv_zero);
-	//~ dynet::Expression loss_align=0.5*dynet::squared_norm(mean_sample);
-	
-	//~ dynet::Expression loss=mean_target-mean_sample+mean_zeros*bias_zero_weight;
-	dynet::Expression loss=mean_target-mean_sample+loss_rct*bias_zero_weight;
-	//~ dynet::Expression loss=mean_target-mean_sample+loss_align;
+	dynet::Expression loss=mean_target-mean_sample+loss_rct*bias_loss_normal_weight;
 	
 	if(bias_nbatch>1)
 	{
@@ -1160,9 +1229,9 @@ float Deep_MetaD::update_bias(const std::vector<float>& vec_arg_record,
 	
 	dynet::Dim arg_dim({narg,tot_mc_points});
 	dynet::Dim e_dim({tot_mc_points});
-	dynet::Expression arg_input=dynet::input(cg,arg_dim,vec_arg_random);
-	dynet::Expression tot_fes_old=dynet::input(cg,e_dim,origin_fes_random);
-	dynet::Expression tot_fes_new=dynet::input(cg,e_dim,update_fes_random);
+	dynet::Expression arg_input=dynet::input(cg,arg_dim,&vec_arg_random);
+	dynet::Expression tot_fes_old=dynet::input(cg,e_dim,&origin_fes_random);
+	dynet::Expression tot_fes_new=dynet::input(cg,e_dim,&update_fes_random);
 	dynet::Expression tot_bias_new=dynet::transpose(nnv.energy(cg,arg_input));
 	dynet::Expression fin_log_m_F_p_V=tot_fes_old/mc_bias_factor-tot_fes_new*(bias_factor+1.0)/bias_factor-tot_bias_new;
 	dynet::Expression fin_log_Zb=dynet::logsumexp_dim(beta*fin_log_m_F_p_V,0);
@@ -1258,7 +1327,7 @@ void Deep_MetaD::hybrid_monte_carlo(unsigned cycles)
 			accept=true;
 		else
 		{
-			double acprob=exp(-kBT*(H1-H0));
+			double acprob=exp(-beta*(H1-H0)/mc_bias_factor);
 			double prob=rand_prob(rdgen);
 			if(prob<acprob)
 				accept=true;
@@ -1333,7 +1402,7 @@ void Deep_MetaD::metropolis_monte_carlo(unsigned cycles)
 			accept=true;
 		else
 		{
-			double acprob=exp(-kBT*(E1-E0)/mc_bias_factor);
+			double acprob=exp(-beta*(E1-E0)/mc_bias_factor);
 			double prob=rand_prob(rdgen);
 			if(prob<acprob)
 				accept=true;
@@ -1389,6 +1458,68 @@ void Deep_MetaD::random_moves(std::vector<float>& coords)
 			coords[i]-=arg_period[i];
 	}
 }
+
+void Deep_MetaD::write_grid_file(MLP_energy& nn,OFile& ogrid,const std::string& label)
+{	
+	unsigned r=0;
+	if(use_mw)
+	{
+		if(comm.Get_rank()==0)
+			r=multi_sim_comm.Get_rank();
+		comm.Bcast(r,0);
+	}
+	if(r==0)
+		ogrid.rewind();
+		
+	dynet::ComputationGraph cg;
+	
+	std::vector<float> args(narg);
+	dynet::Expression arg_inputs=dynet::input(cg,{narg},&args);
+	dynet::Expression output=nn.energy(cg,arg_inputs);
+	
+	ogrid.addConstantField("ITERATION");
+	ogrid.printField("ITERATION",getTime());
+	
+	std::vector<unsigned> id(narg,0);
+	
+	unsigned count=0;
+	bool do_cycle=true;
+	while(do_cycle)
+	{
+		ogrid.printField("Index",int(count++));
+		
+		for(unsigned i=0;i!=narg;++i)
+		{
+			float val=arg_min[i]+id[i]*grid_space[i];
+			ogrid.printField(arg_label[i],val);
+			args[i]=val;
+		}
+		std::vector<float> out=dynet::as_vector(cg.forward(output));
+		ogrid.printField(label,out[0]);
+		ogrid.printField();
+		
+		++id[0];
+		for(unsigned i=0;i!=narg;++i)
+		{
+			if(id[i]<grid_bins[i])
+				break;
+			else
+			{
+				if((i+1)==narg)
+					do_cycle=false;
+				else
+				{
+					if((i+2)==narg)
+						ogrid.printField();
+					++id[i+1];
+					id[i]=0;
+				}
+			}
+		}
+	}
+	ogrid.flush();
+}
+
 
 }
 }
