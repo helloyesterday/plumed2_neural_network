@@ -84,6 +84,9 @@ NN_Bias::NN_Bias(const ActionOptions& ao):
 	parse("SCALE",scale_factor);
 	energy_scale=scale_factor*kBT;
 	
+	nncv_ptr->set_scale(energy_scale);
+	nncv_ptr->set_shift(0);
+	
 	checkRead();
 	
 	log.printf("  use neural network %s as bias potential:\n",nncv_label.c_str());
