@@ -36,6 +36,8 @@ class NNCV_Arg :
 {
 private:
 	bool is_has_periodic;
+	
+	unsigned narg;
 
 	std::vector<bool> arg_is_periodic;
 	
@@ -47,6 +49,10 @@ private:
 	std::vector<float> arg_max;
 	std::vector<float> arg_period;
 	std::vector<float> arg_rescale;
+	std::vector<float> grid_bins;
+	std::vector<float> grid_space;
+	
+	std::vector<std::vector<float>> grid_values;
 	
 	std::vector<std::string> arg_label;
 public:
@@ -54,6 +60,8 @@ public:
 	explicit NNCV_Arg(const ActionOptions&ao);
 	
 	void calculate();
+	
+	void write_grid_file(OFile& ogrid,const std::string& label);
 	
 	std::vector<float> get_input_values() {return args;}
 	std::vector<float> get_input_layer();

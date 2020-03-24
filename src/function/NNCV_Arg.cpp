@@ -38,6 +38,7 @@ void NNCV_Arg::registerKeywords(Keywords& keys) {
 	keys.use("ARG");
 	keys.add("optional","ARG_MIN","the minimal boundary of ARG");
 	keys.add("optional","ARG_MAX","the maximal boundary of ARG");
+	keys.add("optional","GRID_BIN","the number of bins for the grid to output the neural network");
 	keys.add("optional","PERIODIC_ARG_ID","the ID of periodic ARG (the ID of first ARG is 0)");
 	ActionWithValue::useCustomisableComponents(keys);
 }
@@ -46,6 +47,7 @@ NNCV_Arg::NNCV_Arg(const ActionOptions&ao):
 	Action(ao),
 	Function(ao),
 	NNCV(ao),
+	narg(getNumberOfArguments()),
   	arg_is_periodic(getNumberOfArguments(),false),
 	args(getNumberOfArguments(),0),
 	arg_min(getNumberOfArguments(),0),
@@ -58,7 +60,7 @@ NNCV_Arg::NNCV_Arg(const ActionOptions&ao):
 	use_atoms=false;
 	
 	is_has_periodic=false;
-	for(unsigned i=0;i!=getNumberOfArguments();++i)
+	for(unsigned i=0;i!=narg;++i)
 	{
 		arg_is_periodic[i]=getPntrToArgument(i)->isPeriodic();
 		arg_label[i]=getPntrToArgument(i)->getName();
@@ -71,29 +73,31 @@ NNCV_Arg::NNCV_Arg(const ActionOptions&ao):
 		arg_max[i]=maxout;
 		arg_period[i]=maxout-minout;
 	}
-	ninput=getNumberOfArguments();
+	ninput=narg;
 	
 	std::vector<float> arg_min_in;
+	if(keywords.exists("ARG_MIN"))
+		parseVector("ARG_MIN",arg_min_in);
 	std::vector<float> arg_max_in;
-	parseVector("ARG_MIN",arg_min_in);
-	parseVector("ARG_MAX",arg_max_in);
+	if(keywords.exists("ARG_MIN"))
+		parseVector("ARG_MAX",arg_max_in);
 	
 	std::vector<unsigned> periodic_arg_id;
 	parseVector("PERIODIC_ARG_ID",periodic_arg_id);
 	if(periodic_arg_id.size()>0)
 	{
 		is_has_periodic=true;
-		arg_is_periodic.assign(getNumberOfArguments(),false);
+		arg_is_periodic.assign(narg,false);
 		for(unsigned i=0;i!=periodic_arg_id.size();++i)
 		{
 			unsigned id=periodic_arg_id[i];
-			plumed_massert(id<getNumberOfArguments(),"PERIODIC_ARG_ID must be smaller than the number of ARG");
+			plumed_massert(id<narg,"PERIODIC_ARG_ID must be smaller than the number of ARG");
 			arg_is_periodic[id]=true;
 		}
 	}
 	
 	input_dim=ninput;
-	for(unsigned i=0;i!=getNumberOfArguments();++i)
+	for(unsigned i=0;i!=narg;++i)
 	{
 		if(arg_is_periodic[i])
 		{
@@ -107,25 +111,25 @@ NNCV_Arg::NNCV_Arg(const ActionOptions&ao):
 	set_output_dim();
 	build_neural_network();
 	
-	if(param_file.size()>0)
+	if(param_in.size()>0)
 		load_parameter();
 	
 	if(arg_min_in.size()+arg_max_in.size()>0)
 	{
 		plumed_massert(arg_min_in.size()!=arg_max_in.size(),"the number of ARG_MAX must equal to ARG_MIN");
-		if(arg_min_in.size()!=getNumberOfArguments())
+		if(arg_min_in.size()!=narg)
 		{
 			if(arg_min_in.size()==1)
 			{
 				float min=arg_min_in[0];
 				float max=arg_max_in[0];
-				arg_min_in.assign(getNumberOfArguments(),min);
-				arg_max_in.assign(getNumberOfArguments(),max);
+				arg_min_in.assign(narg,min);
+				arg_max_in.assign(narg,max);
 			}
 			else
 				plumed_merror("the number of ARG_MAX and ARG_MIN mismatch with the number of ARG!");
 		}
-		for(unsigned i=0;i!=getNumberOfArguments();++i)
+		for(unsigned i=0;i!=narg;++i)
 		{
 			arg_min[i]=arg_min_in[i];
 			arg_max[i]=arg_max_in[i];
@@ -137,6 +141,37 @@ NNCV_Arg::NNCV_Arg(const ActionOptions&ao):
 				if(std::fabs(diff)>1e-6)
 					arg_rescale[i]=2*pi/arg_period[i];
 			}
+		}
+	}
+	
+	if(keywords.exists("GRID_BIN"))
+		parseVector("GRID_BIN",grid_bins);
+	else if(grid_wstride>0)
+		grid_bins.push_back(100);
+		
+	if(grid_wstride>0)
+	{		
+		if(grid_bins.size()!=narg)
+		{
+			if(grid_bins.size()==1)
+			{
+				unsigned bin=grid_bins[0];
+				grid_bins.assign(narg,bin);
+			}
+			else
+				plumed_merror("the number of bins mismatch!");
+		}
+		
+		for(unsigned i=0;i!=narg;++i)
+		{
+			float space=arg_period[i]/grid_bins[i];
+			grid_space.push_back(space);
+			if(arg_is_periodic[i])
+				++grid_bins[i];
+			std::vector<float> vec_val;
+			for(unsigned j=0;j!=grid_bins[i];++j)
+				vec_val.push_back(arg_min[i]+j*space);
+			grid_values.push_back(vec_val);
 		}
 	}
 	
@@ -162,7 +197,7 @@ NNCV_Arg::NNCV_Arg(const ActionOptions&ao):
 	checkRead();
 	
 	log.printf("  using neural network as collective variable with %d arguments as input.\n",int(ninput));
-	for(unsigned i=0;i!=getNumberOfArguments();++i)
+	for(unsigned i=0;i!=narg;++i)
 	{
 		if(arg_is_periodic[i])
 			log.printf("    argument %d: \"%s\", periodic from %f to %f with period %f.\n",int(i+1),arg_label[i].c_str(),arg_min[i],arg_max[i],arg_period[i]);
@@ -176,7 +211,7 @@ NNCV_Arg::NNCV_Arg(const ActionOptions&ao):
 
 void NNCV_Arg::calculate()
 {
-	for(unsigned i=0;i!=getNumberOfArguments();++i)
+	for(unsigned i=0;i!=narg;++i)
 		args[i]=getArgument(i);
 	
 	dynet::ComputationGraph cg;
@@ -191,7 +226,7 @@ void NNCV_Arg::calculate()
 		{
 			cg.backward(y,true);
 			std::vector<float> deriv=dynet::as_vector(x.gradient());
-			for(unsigned i=0;i!=getNumberOfArguments();++i)
+			for(unsigned i=0;i!=narg;++i)
 				setDerivative(i,deriv[i]);
 		}
 	}
@@ -211,7 +246,7 @@ void NNCV_Arg::calculate()
 				cg.forward(yi);
 				cg.backward(yi,true);
 				std::vector<float> deriv=dynet::as_vector(x.gradient());
-				for(unsigned j=0;j!=getNumberOfArguments();++j)
+				for(unsigned j=0;j!=narg;++j)
 					setDerivative(v,j,deriv[j]);
 			}
 		}
@@ -251,6 +286,59 @@ std::vector<float> NNCV_Arg::get_input_layer()
 	dynet::Expression x=dynet::input(cg,{input_dim},&args);
 	dynet::Expression inputs=input_reform(cg,x);
 	return dynet::as_vector(cg.forward(inputs));
+}
+
+void NNCV_Arg::write_grid_file(OFile& ogrid,const std::string& label)
+{
+	dynet::ComputationGraph cg;
+	
+	std::vector<float> args(narg);
+	dynet::Expression arg_inputs=dynet::input(cg,{narg},&args);
+	dynet::Expression arg_output=output(cg,arg_inputs)*grid_output_scale+
+		grid_output_shift;
+	
+	ogrid.addConstantField("ITERATION");
+	ogrid.printField("ITERATION",getTime());
+	
+	std::vector<unsigned> id(narg,0);
+	
+	unsigned count=0;
+	bool do_cycle=true;
+	while(do_cycle)
+	{
+		ogrid.printField("Index",int(count++));
+		
+		for(unsigned i=0;i!=narg;++i)
+		{
+			unsigned j=id[i];
+			float val=grid_values[i][j];
+			ogrid.printField(arg_label[i],val);
+			args[i]=val;
+		}
+		std::vector<float> out=dynet::as_vector(cg.forward(arg_output));
+		ogrid.printField(label,out[0]);
+		ogrid.printField();
+		
+		++id[0];
+		for(unsigned i=0;i!=narg;++i)
+		{
+			if(id[i]<grid_bins[i])
+				break;
+			else
+			{
+				if((i+1)==narg)
+					do_cycle=false;
+				else
+				{
+					if((i+2)==narg)
+						ogrid.printField();
+					++id[i+1];
+					id[i]=0;
+				}
+			}
+		}
+	}
+	ogrid.flush();
 }
 
 
