@@ -68,6 +68,8 @@ public:
 	void calculate();
 	static void registerKeywords(Keywords& keys);
 	
+	bool calc_self_dis() const {return gnn_ptr->calc_self_dis();}
+	
 	void set_cutoff(float _cutoff){cutoff=_cutoff;}
 	float get_cutoff() const {return cutoff;}
 	
@@ -77,8 +79,8 @@ public:
 	std::vector<float> get_input_layer() {return input_dis;}
 	
 	dynet::Expression calc_rbf(dynet::ComputationGraph& cg,const dynet::Expression& dis) {return gnn_ptr->calc_rbf(cg,dis);}
-	dynet::Expression gnn_output(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& neigh_dis,const std::vector<std::vector<unsigned>>& neigh_id)
-		{return gnn_ptr->gnn_output(cg,neigh_dis,neigh_id);}
+	dynet::Expression gnn_output(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& neigh_rbf,const std::vector<std::vector<unsigned>>& neigh_id)
+		{return gnn_ptr->gnn_output(cg,neigh_rbf,neigh_id);}
 	
 	dynet::Expression energy(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& atoms_coord,bool use_cutoff=true);
 	dynet::Expression output(dynet::ComputationGraph& cg,const dynet::Expression& x) {return nn_output(cg,x);}
@@ -176,40 +178,86 @@ void NNCV_GNN::calculate()
 	
 	dynet::ComputationGraph cg;
 	std::vector<dynet::Expression> dy_dis(natoms);
-	std::vector<dynet::Expression> neigh_dis(natoms);
+	std::vector<dynet::Expression> neigh_rbf(natoms);
 	
 	input_dis.resize(0);
-	for(unsigned i=0;i!=natoms;++i)
+	
+	if(calc_self_dis())
 	{
-		Vector atom0=atoms_coord[i];
-		for(unsigned j=i+1;j<natoms;++j)
+		Vector vec0(Vector(0,0,0));
+		for(unsigned i=0;i!=natoms;++i)
 		{
-			Vector atom1=atoms_coord[j];
-			Vector vec;
-			if(is_pbc)
-				vec=pbcDistance(atom0,atom1);
-			else
-				vec=delta(atom0,atom1);
-
-			float dis=vec.modulo();
-			input_dis.push_back(dis);
-						
-			long_term(cg,i,j);
-			if(dis<cutoff)
+			Vector atom0=atoms_coord[i];
+			for(unsigned j=i;j<natoms;++j)
 			{
-				dij[i].push_back(dis);
-				dij[j].push_back(dis);
-				neigh_id[i].push_back(j);
-				neigh_id[j].push_back(i);
-				mat_vec[i].push_back(vec);
-				mat_vec[j].push_back(vec);
+				if(j==i)
+				{
+					dij[i].push_back(0);
+					neigh_id[i].push_back(j);
+					mat_vec[i].push_back(vec0);
+				}
+				else
+				{
+					Vector atom1=atoms_coord[j];
+					Vector vec;
+					if(is_pbc)
+						vec=pbcDistance(atom0,atom1);
+					else
+						vec=delta(atom0,atom1);
+
+					float dis=vec.modulo();
+					input_dis.push_back(dis);
+
+					long_term(cg,i,j);
+					if(dis<cutoff)
+					{
+						dij[i].push_back(dis);
+						dij[j].push_back(dis);
+						neigh_id[i].push_back(j);
+						neigh_id[j].push_back(i);
+						mat_vec[i].push_back(vec);
+						mat_vec[j].push_back(vec);
+					}
+				}
 			}
+			dy_dis[i]=dynet::input(cg,{1,unsigned(neigh_id[i].size())},&dij[i]);
+			neigh_rbf[i]=calc_rbf(cg,dy_dis[i]);
 		}
-		dy_dis[i]=dynet::input(cg,{1,unsigned(neigh_id[i].size())},&dij[i]);
-		neigh_dis[i]=calc_rbf(cg,dy_dis[i]);
+	}
+	else
+	{
+		for(unsigned i=0;i!=natoms;++i)
+		{
+			Vector atom0=atoms_coord[i];
+			for(unsigned j=i+1;j<natoms;++j)
+			{
+				Vector atom1=atoms_coord[j];
+				Vector vec;
+				if(is_pbc)
+					vec=pbcDistance(atom0,atom1);
+				else
+					vec=delta(atom0,atom1);
+
+				float dis=vec.modulo();
+				input_dis.push_back(dis);
+
+				long_term(cg,i,j);
+				if(dis<cutoff)
+				{
+					dij[i].push_back(dis);
+					dij[j].push_back(dis);
+					neigh_id[i].push_back(j);
+					neigh_id[j].push_back(i);
+					mat_vec[i].push_back(vec);
+					mat_vec[j].push_back(vec);
+				}
+			}
+			dy_dis[i]=dynet::input(cg,{1,unsigned(neigh_id[i].size())},&dij[i]);
+			neigh_rbf[i]=calc_rbf(cg,dy_dis[i]);
+		}
 	}
 
-	dynet::Expression pred=gnn_output(cg,neigh_dis,neigh_id);
+	dynet::Expression pred=gnn_output(cg,neigh_rbf,neigh_id);
 	std::vector<float> output=dynet::as_vector(cg.forward(pred));
 	
 	if(get_output_dim()==1)
@@ -271,11 +319,14 @@ inline void NNCV_GNN::calc_deriv(unsigned i,const std::vector<float>& grad,const
 	for(unsigned j=0;j!=ids.size();++j)
 	{
 		unsigned id1=ids[j];
-		Vector dd((grad[j] / dis[j]) * vec[j]);
-		Tensor vv(dd,vec[j]);
-		deriv[id0]-=dd;
-		deriv[id1]+=dd;
-		virial-=vv;
+		if(id0!=id1)
+		{
+			Vector dd((grad[j] / dis[j]) * vec[j]);
+			Tensor vv(dd,vec[j]);
+			deriv[id0]-=dd;
+			deriv[id1]+=dd;
+			virial-=vv;
+		}
 	}
 }
 

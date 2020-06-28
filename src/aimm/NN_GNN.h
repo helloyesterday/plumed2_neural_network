@@ -41,6 +41,7 @@ protected:
 	
 	bool pbc;
 	bool firsttime;
+	bool is_self_dis;
 	
 	float cutoff;
 		
@@ -74,6 +75,8 @@ public:
 	void calculate(){}
 	void update(){}
 	
+	bool calc_self_dis() const {return is_self_dis;}
+	
 	void set_atom_types(const std::vector<unsigned> _atom_types) {atom_types=_atom_types;}
 	void set_atoms_number(unsigned _natoms) {natoms=_natoms;}
 	void set_atom_types_number(unsigned _ntypes) {ntypes=_ntypes;}
@@ -95,7 +98,7 @@ public:
 	void clip(float left,float right,bool clip_last=false) {}
 	void clip_inplace(float left,float right,bool clip_last=false) {}
 	
-	virtual dynet::Expression calc_rbf(dynet::ComputationGraph& cg,const dynet::Expression& dis) const {return dynet::zeros(cg,{rbf_num,ntypes});}
+	virtual dynet::Expression calc_rbf(dynet::ComputationGraph& cg,const dynet::Expression& dis) {return dynet::zeros(cg,{rbf_num,ntypes});}
 	virtual dynet::Expression gnn_output(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& neigh_dis,const std::vector<std::vector<unsigned>>& neigh_id) {return dynet::zeros(cg,{output_dim});}
 	
 	virtual void build_neural_network() {}

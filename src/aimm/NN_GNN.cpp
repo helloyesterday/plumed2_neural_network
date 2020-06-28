@@ -39,7 +39,8 @@ void NN_GNN::registerKeywords(Keywords& keys) {
 NN_GNN::NN_GNN(const ActionOptions&ao):
 	Neural_Network(ao),
 	natoms(0),
-	ntypes(0)
+	ntypes(0),
+	is_self_dis(false)
 {
 	parse("ACTIVE_FUNCTION",str_af);
 	af=activation_function(str_af);

@@ -57,7 +57,7 @@ private:
 	
 	void long_term(dynet::ComputationGraph& cg,unsigned i,unsigned j){}	
 	
-	dynet::Expression interaction(dynet::ComputationGraph& cg,const dynet::Expression& vxl,const std::vector<dynet::Expression>& vec_rbf,const std::vector<std::vector<unsigned>>& dis_id);
+	dynet::Expression interaction(dynet::ComputationGraph& cg,const dynet::Expression& vxl,const std::vector<dynet::Expression>& neigh_rbf,const std::vector<std::vector<unsigned>>& neigh_id);
 	
 	dynet::Expression atom_wise(dynet::ComputationGraph& cg,const dynet::Expression& x){
 		dynet::Expression W = dynet::parameter(cg, params[iparm][0]);
@@ -97,7 +97,7 @@ public:
 	
 	float get_rbf_width() const {return rbf_width;}
 	
-	dynet::Expression calc_rbf(dynet::ComputationGraph& cg,const dynet::Expression& dis) const {
+	dynet::Expression calc_rbf(dynet::ComputationGraph& cg,const dynet::Expression& dis) {
 		dynet::Expression gamma=dynet::const_parameter(cg, params[0][0]);
 		dynet::Expression mu=dynet::const_parameter(cg, params[0][1]);
 		dynet::Expression dis_vec=dynet::ones(cg,{rbf_num})*dis;
@@ -196,7 +196,7 @@ void GNN_SchNet::build_neural_network()
 	}
 }
 
-dynet::Expression GNN_SchNet::gnn_output(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& vec_rbf,const std::vector<std::vector<unsigned>>& dis_id)
+dynet::Expression GNN_SchNet::gnn_output(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& neigh_rbf,const std::vector<std::vector<unsigned>>& neigh_id)
 {
 	iparm=1;
 	// embedding layer
@@ -206,7 +206,7 @@ dynet::Expression GNN_SchNet::gnn_output(dynet::ComputationGraph& cg,const std::
 	dynet::Expression vxl=x0;
 	for(unsigned l=0;l!=num_inlayers;++l)
 	{
-		dynet::Expression vvl=interaction(cg,vxl,vec_rbf,dis_id);
+		dynet::Expression vvl=interaction(cg,vxl,neigh_rbf,neigh_id);
 		vxl=vxl+vvl;
 	}
 	
@@ -217,7 +217,7 @@ dynet::Expression GNN_SchNet::gnn_output(dynet::ComputationGraph& cg,const std::
 	return pred;
 }
 
-dynet::Expression GNN_SchNet::interaction(dynet::ComputationGraph& cg,const dynet::Expression& vxl0,const std::vector<dynet::Expression>& vec_rbf,const std::vector<std::vector<unsigned>>& dis_id)
+dynet::Expression GNN_SchNet::interaction(dynet::ComputationGraph& cg,const dynet::Expression& vxl0,const std::vector<dynet::Expression>& neigh_rbf,const std::vector<std::vector<unsigned>>& neigh_id)
 {
 	// atom-wise
 	unsigned iparm_begin=iparm;
@@ -230,10 +230,10 @@ dynet::Expression GNN_SchNet::interaction(dynet::ComputationGraph& cg,const dyne
 	{
 		iparm=iparm_begin;
 		
-		dynet::Expression wl=filter_generator(cg,vec_rbf[iatom]);
+		dynet::Expression wl=filter_generator(cg,neigh_rbf[iatom]);
 		
 		// continuous-filter convolutions
-		dynet::Expression xl=dynet::select_cols(vxl,dis_id[iatom]);		
+		dynet::Expression xl=dynet::select_cols(vxl,neigh_id[iatom]);		
 		dynet::Expression xl_wl=dynet::cmult(xl,wl);
 		dynet::Expression cfconv=dynet::sum_dim(xl_wl,{1});
 		vec_cfconv.push_back(cfconv);
@@ -256,8 +256,8 @@ dynet::Expression GNN_SchNet::interaction(dynet::ComputationGraph& cg,const dyne
 dynet::Expression GNN_SchNet::output(dynet::ComputationGraph& cg,const dynet::Expression& x)
 {
 	std::vector<std::vector<dynet::Expression>> mat_dis(natoms);
-	std::vector<dynet::Expression> vec_rbf(natoms);
-	std::vector<std::vector<unsigned>> dis_id(natoms);
+	std::vector<dynet::Expression> neigh_rbf(natoms);
+	std::vector<std::vector<unsigned>> neigh_id(natoms);
 	std::vector<dynet::Expression> acoord;
 	
 	for(unsigned i=0;i!=natoms;++i)
@@ -278,15 +278,15 @@ dynet::Expression GNN_SchNet::output(dynet::ComputationGraph& cg,const dynet::Ex
 			{
 				mat_dis[i].push_back(dis);
 				mat_dis[j].push_back(dis);
-				dis_id[i].push_back(j);
-				dis_id[j].push_back(i);
+				neigh_id[i].push_back(j);
+				neigh_id[j].push_back(i);
 			}
 		}
 		dynet::Expression cdis=dynet::concatenate_cols(mat_dis[i]);
-		vec_rbf[i]=calc_rbf(cg,cdis);
+		neigh_rbf[i]=calc_rbf(cg,cdis);
 	}
 	
-	return gnn_output(cg,vec_rbf,dis_id);
+	return gnn_output(cg,neigh_rbf,neigh_id);
 }
 
 }
