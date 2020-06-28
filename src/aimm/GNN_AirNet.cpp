@@ -315,7 +315,7 @@ dynet::Expression GNN_AirNet::interaction(dynet::ComputationGraph& cg,const dyne
 		dynet::Expression atom_weights=dynet::min(res_weight,pondering_weights);
 		dynet::Expression weight_diff=res_weight-pondering_weights;
 		
-		res_weight=res_weight-atom_weights;
+		res_weight=dynet::max(weight_diff,dynet::zeros(cg,{1,natoms}));
 		std::vector<float> value_diff=dynet::as_vector(weight_diff.value());
 		std::vector<float> value_weights=dynet::as_vector(atom_weights.value());
 
