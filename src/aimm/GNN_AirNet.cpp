@@ -39,10 +39,11 @@ class GNN_AirNet :  public NN_GNN
 private:
 	unsigned num_inlayers;
 	unsigned num_dlayers;
-	unsigned num_mlayers;
+	//~ unsigned num_mlayers;
 	unsigned att_layers;
 	unsigned att_dim;
 	unsigned max_cycles;
+	unsigned ponder_layers;
 
 	float rbf_sigma;
 	float rbf_scale;
@@ -51,8 +52,11 @@ private:
 	float scale_in_loss=0.01;
 	float weight_scale;
 	
+	std::vector<unsigned> ponder_dim;
 	std::vector<unsigned> out_aw_dims={32,1};
 	std::vector<std::vector<unsigned>> row_ids;
+	
+	std::vector<Activation> ponder_act_funs;
 	
 	void update_rbf_scale(){rbf_scale=0.5/(rbf_sigma*rbf_sigma);}
 	void update_basis(){update_rbf_scale();update_rbf_range();}
@@ -78,10 +82,10 @@ private:
 	
 	void long_term(dynet::ComputationGraph& cg,unsigned i,unsigned j){}	
 	
-	dynet::Expression interaction(dynet::ComputationGraph& cg,const dynet::Expression& vxl,const std::vector<dynet::Expression>& vgl,const std::vector<std::vector<unsigned>>& neigh_id);
+	void interaction(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& vgl,const std::vector<std::vector<unsigned>>& neigh_id,std::vector<dynet::Expression>& vec_xi);
 	void positional_embedding(dynet::ComputationGraph& cg,const dynet::Expression& xi,const dynet::Expression& xij,const dynet::Expression& gij,dynet::Expression& qi,dynet::Expression& Ki,dynet::Expression& Vi);
 	dynet::Expression multi_head_attention(dynet::ComputationGraph& cg,const dynet::Expression& qi,const dynet::Expression& Ki,const dynet::Expression& Vi);
-	dynet::Expression pondering(dynet::ComputationGraph& cg,const dynet::Expression& vxl);
+	dynet::Expression pondering(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& vxl);
 	
 	dynet::Expression atom_wise(dynet::ComputationGraph& cg,const dynet::Expression& x){
 		dynet::Expression W = dynet::parameter(cg, params[iparm][0]);
@@ -111,12 +115,12 @@ private:
 		return dynet::layer_norm(x,G,u);
 	}
 	
-	dynet::Expression feedback_forward(dynet::ComputationGraph& cg,const dynet::Expression& x){
-		dynet::Expression y=x;
-		for(unsigned iaw=0;iaw!=num_mlayers;++iaw)
-			y=atom_wise(cg,y);
-		return y;
-	}
+	//~ dynet::Expression feedback_forward(dynet::ComputationGraph& cg,const dynet::Expression& x){
+		//~ dynet::Expression y=x;
+		//~ for(unsigned iaw=0;iaw!=num_mlayers;++iaw)
+			//~ y=atom_wise(cg,y);
+		//~ return y;
+	//~ }
 	
 	dynet::Expression read_out(dynet::ComputationGraph& cg,const dynet::Expression& x){
 		dynet::Expression xl=x;
@@ -167,8 +171,11 @@ void GNN_AirNet::registerKeywords(Keywords& keys) {
 	keys.add("compulsory","RBF_MIN","0.01","the width of gaussian used in RBF");
 	keys.add("compulsory","INTER_NUMBER","3","the number of interaction layers of AirNet");
 	keys.add("compulsory","DENSE_NUMBER","2","the number of dense blocks in the filter generator of AirNet");
-	keys.add("compulsory","MLP_LAYERS","3","the number of layers of MLP in feedback forward module of AirNet");
-	keys.add("compulsory","ATTENTION_LAYERS","8","the number of layers of MLP in feedback forward module of AirNet");
+	//~ keys.add("compulsory","MLP_LAYERS","3","the number of layers of MLP in feedback forward module of AirNet");
+	keys.add("compulsory","PONDER_LAYERS","3","the number of hidden layers of pondering module");
+	keys.add("compulsory","PONDER_DIMENSION","32","the number of hidden layers of pondering module");
+	keys.add("compulsory","PONDER_ACT_FUN","RELU","the activation function in pondering module");
+	keys.add("compulsory","ATTENTION_LAYERS","8","the number of layers of multi head attenaction");
 	keys.add("compulsory","MAX_CYCLES","10","the maximum cycles at interaction layer.");
 }
 
@@ -177,10 +184,42 @@ GNN_AirNet::GNN_AirNet(const ActionOptions&ao):
 {
 	is_self_dis=true;
 	parse("INTER_NUMBER",num_inlayers);
-	parse("MLP_LAYERS",num_mlayers);
+	//~ parse("MLP_LAYERS",num_mlayers);
 	parse("DENSE_NUMBER",num_dlayers);
 	parse("ATTENTION_LAYERS",att_layers);
 	parse("MAX_CYCLES",max_cycles);
+	
+	parse("PONDER_LAYERS",ponder_layers);
+	
+	parseVector("PONDER_DIMENSION",ponder_dim);
+	if(ponder_dim.size()!=ponder_layers)
+	{
+		if(ponder_dim.size()==1)
+		{
+			unsigned dim=ponder_dim[0];
+			ponder_dim.assign(ponder_layers,dim);
+		}
+		else
+			plumed_merror("the size of PONDER_DIMENSION mismatch!");
+	}
+	for(unsigned i=0;i!=ponder_layers;++i)
+		plumed_massert(ponder_dim[i]>0,"PONDER_DIMENSION must be larger than 0!");
+	
+	std::vector<std::string> str_paf;
+	parseVector("PONDER_ACT_FUN",str_paf);
+	if(str_paf.size()!=ponder_layers)
+	{
+		if(str_paf.size()==1) 
+		{
+			std::string af=str_paf[0];
+			str_paf.assign(ponder_layers,af);
+		}
+		else
+			plumed_merror("the size of PONDER_ACT_FUN mismatch!");
+	}
+	ponder_act_funs.resize(ponder_layers);
+	for(unsigned i=0;i!=ponder_layers;++i)
+		ponder_act_funs[i]=activation_function(str_paf[i]);
 	
 	plumed_massert(vec_dim%att_layers==0,"VECTOR_DIMENSION must be divisible by ATTENTION_LAYERS");
 	att_dim=vec_dim/att_layers;
@@ -208,7 +247,10 @@ GNN_AirNet::GNN_AirNet(const ActionOptions&ao):
 	log.printf("  with minimual distance for radical basis functions: %f\n",rbf_min);
 	log.printf("  with number of interaction layers of neural network: %d\n",int(num_inlayers));
 	log.printf("  with number of dense blocks of filter generator: %d\n",int(num_dlayers));
-	log.printf("  with number of layers of MLP for feedback foward : %d\n",int(num_mlayers));
+	//~ log.printf("  with number of layers of MLP for feedback foward : %d\n",int(num_mlayers));
+	log.printf("  with pondering module with %d hidden layers:\n",int(ponder_layers));
+	for(unsigned i=0;i!=ponder_layers;++i)
+		log.printf("    Hidden layer %d with dimension %d and activation funciton %s\n",int(i+1),int(ponder_dim[i]),str_paf[i].c_str());
 }
 
 void GNN_AirNet::build_neural_network()
@@ -241,6 +283,19 @@ void GNN_AirNet::build_neural_network()
 	// interaction layers
 	for(unsigned l=0;l!=num_inlayers;++l)
 	{
+		// pondering module
+		unsigned input_dim=vec_dim;
+		for(unsigned p=0;p!=ponder_layers;++p)
+		{
+			dynet::Parameter pW=pc.add_parameters({ponder_dim[p],input_dim});
+			dynet::Parameter pb=pc.add_parameters({ponder_dim[p]});
+			params.push_back({pW,pb});
+			input_dim=ponder_dim[p];
+		}
+		dynet::Parameter pW=pc.add_parameters({1,input_dim});
+		dynet::Parameter pb=pc.add_parameters({1});
+		params.push_back({pW,pb});
+		
 		// multi head attention
 		dynet::Parameter Wq=pc.add_parameters({vec_dim,vec_dim});
 		dynet::Parameter Wk=pc.add_parameters({vec_dim,vec_dim});
@@ -262,7 +317,7 @@ void GNN_AirNet::build_neural_network()
 	}
 	
 	// read out function
-	unsigned input_dim=vec_dim;
+	input_dim=vec_dim;
 	for(unsigned iaw=0;iaw!=out_aw_dims.size();++iaw)
 	{
 		// atom-wise
@@ -277,10 +332,18 @@ void GNN_AirNet::build_neural_network()
 dynet::Expression GNN_AirNet::gnn_output(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& neigh_rbf,const std::vector<std::vector<unsigned>>& neigh_id)
 {
 	iparm=1;
-	// embedding layer
-	dynet::Expression x0=embedding(cg);
 	
+	// embedding layer
 	unsigned iparm_begin=iparm;
+	std::vector<dynet::Expression> vec_xi;
+	for(unsigned i=0;i!=natoms;++i)
+	{
+		iparm=iparm_begin;
+		dynet::Expression x0=embedding(cg,i);
+		vec_xi.push_back(x0);
+	}
+	
+	iparm_begin=iparm;
 	std::vector<dynet::Expression> vgl;
 	// filter_generator
 	for(unsigned iatom=0;iatom!=natoms;++iatom)
@@ -290,9 +353,9 @@ dynet::Expression GNN_AirNet::gnn_output(dynet::ComputationGraph& cg,const std::
 	}
 	
 	// interaction layer
-	dynet::Expression vxl=x0;
 	for(unsigned l=0;l!=num_inlayers;++l)
-		vxl=interaction(cg,vxl,vgl,neigh_id);
+		interaction(cg,vgl,neigh_id,vec_xi);
+	dynet::Expression vxl=dynet::concatenate_cols(vec_xi);
 	
 	// read out function
 	dynet::Expression vy=read_out(cg,vxl);
@@ -301,17 +364,18 @@ dynet::Expression GNN_AirNet::gnn_output(dynet::ComputationGraph& cg,const std::
 	return pred;
 }
 
-dynet::Expression GNN_AirNet::interaction(dynet::ComputationGraph& cg,const dynet::Expression& vxl,const std::vector<dynet::Expression>& vgl,const std::vector<std::vector<unsigned>>& neigh_id)
+void GNN_AirNet::interaction(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& vgl,const std::vector<std::vector<unsigned>>& neigh_id,std::vector<dynet::Expression>& vec_xi)
 {
 	unsigned iparm_begin=iparm;
-	dynet::Expression vxl1=vxl;
-	
+
 	dynet::Expression res_weight=dynet::ones(cg,{1,natoms});
 	std::vector<bool> atom_stop(natoms,false);
 	
+	std::vector<dynet::Expression> vxl1(natoms);
 	for(unsigned ilayer=0;ilayer!=max_cycles;++ilayer)
-	{	
-		dynet::Expression pondering_weights=pondering(cg,vxl1);
+	{
+		iparm=iparm_begin;
+		dynet::Expression pondering_weights=pondering(cg,vec_xi);
 		dynet::Expression atom_weights=dynet::min(res_weight,pondering_weights);
 		dynet::Expression weight_diff=res_weight-pondering_weights;
 		
@@ -320,36 +384,35 @@ dynet::Expression GNN_AirNet::interaction(dynet::ComputationGraph& cg,const dyne
 		std::vector<float> value_weights=dynet::as_vector(atom_weights.value());
 
 		bool stop_cycle=true;
-		std::vector<dynet::Expression> vec_hl;
 		//~ std::cout<<"cycles "<<ilayer<<":";
+		unsigned iparm_cycle=iparm;
 		for(unsigned iatom=0;iatom!=natoms;++iatom)
 		{
-			std::vector<unsigned> id={iatom};
-			dynet::Expression xi=dynet::select_cols(vxl1,id);
-			
 			if(atom_stop[iatom]||value_weights[iatom]<=0)
 			{
-				vec_hl.push_back(xi);
+				vxl1[iatom]=vec_xi[iatom];
 			}
 			else
 			{
-				//~ std::cout<<" "<<iatom<<",";
-				
-				iparm=iparm_begin;
-				dynet::Expression xij=dynet::select_cols(vxl1,neigh_id[iatom]);
+				//~ std::cout<<" "<<iatom<<"("<<value_weights[iatom]<<"),";
+				iparm=iparm_cycle;
+				std::vector<dynet::Expression> vec_xij;
+				for(unsigned j=0;j!=neigh_id[iatom].size();++j)
+					vec_xij.push_back(vec_xi[neigh_id[iatom][j]]);
+				dynet::Expression xij=concatenate_cols(vec_xij);
 				
 				dynet::Expression qi;
 				dynet::Expression Ki;
 				dynet::Expression Vi;
 				
-				positional_embedding(cg,xi,xij,vgl[iatom],qi,Ki,Vi);
+				positional_embedding(cg,vec_xi[iatom],xij,vgl[iatom],qi,Ki,Vi);
 				
+				std::vector<unsigned> id={iatom};
 				dynet::Expression dxi=multi_head_attention(cg,qi,Ki,Vi);
 				dynet::Expression ww=select_cols(atom_weights,id);
-				dynet::Expression al=xi+dxi*ww;
+				dynet::Expression al=vec_xi[iatom]+dxi*ww;
 				
-				dynet::Expression hl=layer_normalization(cg,al);
-				vec_hl.push_back(hl);
+				vxl1[iatom]=layer_normalization(cg,al);
 			}
 
 			if(value_diff[iatom]<=0)
@@ -357,22 +420,33 @@ dynet::Expression GNN_AirNet::interaction(dynet::ComputationGraph& cg,const dyne
 			else
 				stop_cycle=false;
 		}
-		vxl1=dynet::concatenate_cols(vec_hl);
+		vec_xi.swap(vxl1);
 		//~ std::cout<<std::endl;
 		
 		if(stop_cycle)
 			break;
 	}
-	
-	return vxl1;
-	
-	//~ dynet::Expression vhl=dynet::concatenate_cols(vec_hl);
-	//~ return feedback_forward(cg,vhl);
 }
 
-dynet::Expression GNN_AirNet::pondering(dynet::ComputationGraph& cg,const dynet::Expression& vxl)
+dynet::Expression GNN_AirNet::pondering(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& vec_xi)
 {
-	return dynet::ones(cg,{1,natoms});
+	dynet::Expression vx = dynet::concatenate_cols(vec_xi);
+	
+	for(unsigned p=0;p!=ponder_layers;++p)
+	{
+		dynet::Expression pW = dynet::parameter(cg, params[iparm][0]);
+		dynet::Expression pb = dynet::parameter(cg, params[iparm][1]);
+		++iparm;
+		
+		vx = dy_act_fun(pW*vx+pb,ponder_act_funs[p]);
+	}
+	
+	dynet::Expression pW = dynet::parameter(cg, params[iparm][0]);
+	dynet::Expression pb = dynet::parameter(cg, params[iparm][1]);
+	++iparm;
+
+	// Sigmoid
+	return dynet::logistic(pW*vx+pb);
 }
 
 void GNN_AirNet::positional_embedding(dynet::ComputationGraph& cg,const dynet::Expression& xi,const dynet::Expression& xij,const dynet::Expression& gij,dynet::Expression& qi,dynet::Expression& Ki,dynet::Expression& Vi)

@@ -66,6 +66,12 @@ protected:
 		return a*vz;
 	}
 	
+	dynet::Expression embedding(dynet::ComputationGraph& cg,unsigned atom_id){
+		dynet::Expression a = dynet::parameter(cg, params[iparm++][0]);
+		dynet::Expression z = dynet::one_hot(cg,ntypes,atom_id);
+		return a*z;
+	}
+	
 	virtual void update_basis() {};
 	
 public:
