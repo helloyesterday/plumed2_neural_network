@@ -1,23 +1,23 @@
 /* +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-   Copyright (c) 2011-2016 The plumed team
-   (see the PEOPLE file at the root of the distribution for a list of names)
+   Copyright (c) 2018-2020 The AIMM code team
+   (see the PEOPLE-AIMM file at the root of this folder for a list of names)
 
-   See http://www.plumed.org for more information.
+   See https://github.com/helloyesterday for more information.
 
-   This file is part of plumed, version 2.
+   This file is part of AIMM code module.
 
-   plumed is free software: you can redistribute it and/or modify
+   The AIMM code module is free software: you can redistribute it and/or modify
    it under the terms of the GNU Lesser General Public License as published by
    the Free Software Foundation, either version 3 of the License, or
    (at your option) any later version.
 
-   plumed is distributed in the hope that it will be useful,
+   The AIMM code module is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU Lesser General Public License for more details.
 
    You should have received a copy of the GNU Lesser General Public License
-   along with plumed.  If not, see <http://www.gnu.org/licenses/>.
+   along with the AIMM code module.  If not, see <http://www.gnu.org/licenses/>.
 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
 #ifdef __PLUMED_HAS_DYNET
 
@@ -366,7 +366,7 @@ dynet::Expression GNN_AirNet::gnn_output(dynet::ComputationGraph& cg,const std::
 
 void GNN_AirNet::interaction(dynet::ComputationGraph& cg,const std::vector<dynet::Expression>& vgl,const std::vector<std::vector<unsigned>>& neigh_id,std::vector<dynet::Expression>& vec_xi)
 {
-	unsigned iparm_begin=iparm;
+	unsigned iparm_layer=iparm;
 
 	dynet::Expression res_weight=dynet::ones(cg,{1,natoms});
 	std::vector<bool> atom_stop(natoms,false);
@@ -374,7 +374,7 @@ void GNN_AirNet::interaction(dynet::ComputationGraph& cg,const std::vector<dynet
 	std::vector<dynet::Expression> vxl1(natoms);
 	for(unsigned ilayer=0;ilayer!=max_cycles;++ilayer)
 	{
-		iparm=iparm_begin;
+		iparm=iparm_layer;
 		dynet::Expression pondering_weights=pondering(cg,vec_xi);
 		dynet::Expression atom_weights=dynet::min(res_weight,pondering_weights);
 		dynet::Expression weight_diff=res_weight-pondering_weights;
@@ -385,7 +385,7 @@ void GNN_AirNet::interaction(dynet::ComputationGraph& cg,const std::vector<dynet
 
 		bool stop_cycle=true;
 		//~ std::cout<<"cycles "<<ilayer<<":";
-		unsigned iparm_cycle=iparm;
+		unsigned iparm_atom=iparm;
 		for(unsigned iatom=0;iatom!=natoms;++iatom)
 		{
 			if(atom_stop[iatom]||value_weights[iatom]<=0)
@@ -395,7 +395,7 @@ void GNN_AirNet::interaction(dynet::ComputationGraph& cg,const std::vector<dynet
 			else
 			{
 				//~ std::cout<<" "<<iatom<<"("<<value_weights[iatom]<<"),";
-				iparm=iparm_cycle;
+				iparm=iparm_atom;
 				std::vector<dynet::Expression> vec_xij;
 				for(unsigned j=0;j!=neigh_id[iatom].size();++j)
 					vec_xij.push_back(vec_xi[neigh_id[iatom][j]]);
